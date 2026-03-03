@@ -97,19 +97,6 @@ Windows 例:
 
 選択中 Preset の値を現在の `VolumeProfile` に反映し、`AssetDatabase.SaveAssets()` まで実行します。
 
-## サンプルシーン作成
-メニュー:
-- `Tools > URP Remote PP > Create Sample Scene`
-
-生成内容:
-- 色違いマテリアルの複数プリミティブ
-- Ground / Camera / Directional Light
-- Global Volume + 調整済み PostProcess
-- `RemotePostprocessController` 設定済み
-
-出力先:
-- `Assets/URPRemotePostprocessSample/URPRemotePostprocessSample.unity`
-
 ## API（主要）
 - `GET /health`
 - `GET /schema`
