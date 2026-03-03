@@ -52,7 +52,7 @@ Package Manager UI から追加:
 - `http://<PCのIP>:8080/` にアクセス
 - 必要に応じて Windows の URLACL/Firewall 設定を許可
 
-## クイックスタート（画像付き）
+## クイックスタート
 1. Unity でシーンを開く
 2. `RemotePostprocessController` の `Target Volumes` を設定
 3. Play 実行
@@ -64,15 +64,13 @@ Package Manager UI から追加:
 WebUI でスライダーやトグルを操作すると `PATCH /state` が送信され、`RemotePostprocessController` が対象 `Volume` の Postprocess パラメータへ即時適用します。  
 そのため、ゲームビュー/シーンビューの見た目がその場で変化し、調整結果をリアルタイムに確認できます。
 
-例:
-![WebUI Override ON](docs/images/webui-override-on.png)
-*Override が有効な項目だけを絞って調整する画面*
+### 例:
+| Override On | Volume All |
+| -- | -- |
+| ![WebUI Override ON](docs/images/webui-override-on.png) | ![WebUI Volume All](docs/images/webui-volume-all.png) |
+| *Override が有効な項目だけを絞って調整する画面* | *全項目を表示し、Parameter/Component Override も切り替える画面* |
 
-![WebUI Volume All](docs/images/webui-volume-all.png)
-*全項目を表示し、Parameter/Component Override も切り替える画面*
-
-![Unity Inspector Tonemapping](docs/images/unity-inspector-tonemapping.png)
-*Unity Inspector 側の Tonemapping（Mode選択）表示例*
+![Unity Inspector Tonemapping](docs/images/unity-inspector-tonemapping.png)*Unity Inspector 側の Tonemapping（Mode選択）表示例*
 
 ## WebUI の使い方
 - `Override ON`:
