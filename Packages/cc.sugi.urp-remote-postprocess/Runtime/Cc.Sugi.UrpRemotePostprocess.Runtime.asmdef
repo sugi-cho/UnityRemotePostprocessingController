@@ -1,0 +1,17 @@
+{
+  "name": "Cc.Sugi.UrpRemotePostprocess.Runtime",
+  "rootNamespace": "Cc.Sugi.UrpRemotePostprocess",
+  "references": [
+    "Unity.RenderPipelines.Core.Runtime",
+    "Unity.RenderPipelines.Universal.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

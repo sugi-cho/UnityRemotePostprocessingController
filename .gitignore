@@ -1,0 +1,36 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+UserSettings/
+MemoryCaptures/
+Recordings/
+
+# Unity generated meta for imported packages can be tracked if needed
+# but generally this keeps project clean for package development
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.sln
+*.csproj
+*.unityproj
+*.booproj
+*.user
+*.userprefs
+*.pidb
+*.suo
+*.tmp
+*.svd
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node / misc
+node_modules/
+
+# Local helper artifacts
+tmp_*.html

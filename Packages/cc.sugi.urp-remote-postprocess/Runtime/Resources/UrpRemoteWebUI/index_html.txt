@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>URP Remote Postprocess</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="header">
+    <h1>URP Remote Postprocess</h1>
+    <div id="status" class="status">Connecting...</div>
+    <div class="view-switch">
+      <button id="viewActiveBtn" class="is-active" type="button">Override ON</button>
+      <button id="viewAllBtn" type="button">Volume All</button>
+    </div>
+    <div class="preset-bar">
+      <select id="presetSelect"></select>
+      <input id="presetName" type="text" placeholder="preset name" value="default" />
+      <button id="savePresetBtn">Save</button>
+      <button id="loadPresetBtn">Load</button>
+      <button id="renamePresetBtn">Rename</button>
+      <button id="deletePresetBtn" class="danger">Delete</button>
+    </div>
+  </header>
+  <main id="app"></main>
+  <template id="componentTemplate">
+    <section class="component">
+      <button class="component-header" type="button"></button>
+      <div class="component-body"></div>
+    </section>
+  </template>
+  <script src="/app.js"></script>
+</body>
+</html>

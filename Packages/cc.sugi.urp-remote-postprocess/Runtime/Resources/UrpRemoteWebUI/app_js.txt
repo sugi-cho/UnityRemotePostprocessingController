@@ -1,0 +1,847 @@
+const state = {
+  schema: null
+};
+
+const appEl = document.getElementById("app");
+const statusEl = document.getElementById("status");
+const presetSelectEl = document.getElementById("presetSelect");
+const presetNameEl = document.getElementById("presetName");
+const savePresetBtn = document.getElementById("savePresetBtn");
+const loadPresetBtn = document.getElementById("loadPresetBtn");
+const renamePresetBtn = document.getElementById("renamePresetBtn");
+const deletePresetBtn = document.getElementById("deletePresetBtn");
+const viewActiveBtn = document.getElementById("viewActiveBtn");
+const viewAllBtn = document.getElementById("viewAllBtn");
+let ws = null;
+const viewMatch = /(?:[?&]view=)(active|all)/i.exec(location.href);
+const initialView = viewMatch ? viewMatch[1].toLowerCase() : null;
+let currentView = initialView === "all" ? "all" : "active";
+let presetListState = { presets: [], selectedPreset: "" };
+const channelMixerTabByComponent = {};
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+async function api(path, method = "GET", body = null) {
+  const res = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : null
+  });
+  const raw = await res.text();
+  const data = raw ? JSON.parse(raw) : {};
+  if (!res.ok) {
+    throw new Error(data.error || res.statusText);
+  }
+  return data;
+}
+
+function debounce(fn, wait) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
+const sendPatchDebounced = debounce(sendPatchNow, 30);
+
+async function sendPatchNow(entry) {
+  try {
+    await api("/state", "PATCH", { entries: [entry] });
+  } catch (e) {
+    setStatus(`Patch error: ${e.message}`);
+  }
+}
+
+function parseJsonValue(raw, fallback) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function toHex(c) {
+  return Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, "0");
+}
+
+function hexToRgb(hex) {
+  const value = hex.replace("#", "");
+  return {
+    r: parseInt(value.slice(0, 2), 16) / 255,
+    g: parseInt(value.slice(2, 4), 16) / 255,
+    b: parseInt(value.slice(4, 6), 16) / 255
+  };
+}
+
+function hsvToRgb(h, s, v) {
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0: return { r: v, g: t, b: p };
+    case 1: return { r: q, g: v, b: p };
+    case 2: return { r: p, g: v, b: t };
+    case 3: return { r: p, g: q, b: v };
+    case 4: return { r: t, g: p, b: v };
+    default: return { r: v, g: p, b: q };
+  }
+}
+
+function rgbToHsv(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  if (d !== 0) {
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      default: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return { h, s, v };
+}
+
+function normalizeRgbFromVector(v) {
+  const x = Number.isFinite(v.x) ? Math.max(0, v.x) : 1;
+  const y = Number.isFinite(v.y) ? Math.max(0, v.y) : 1;
+  const z = Number.isFinite(v.z) ? Math.max(0, v.z) : 1;
+  const max = Math.max(x, y, z, 0.0001);
+  return { r: x / max, g: y / max, b: z / max, intensity: max };
+}
+
+function createFieldFrame(param, options) {
+  const wrap = document.createElement("div");
+  wrap.className = "field";
+  if (!param.overrideState) {
+    wrap.classList.add("disabled");
+  }
+
+  const head = document.createElement("div");
+  head.className = "field-head";
+  const name = document.createElement("label");
+  name.textContent = options.fieldLabel || param.name;
+
+  const overrideWrap = document.createElement("label");
+  overrideWrap.className = "override-wrap";
+  const overrideInput = document.createElement("input");
+  overrideInput.type = "checkbox";
+  overrideInput.checked = !!param.overrideState;
+  const overrideText = document.createElement("span");
+  overrideText.textContent = "Override";
+  overrideWrap.appendChild(overrideInput);
+  overrideWrap.appendChild(overrideText);
+
+  head.appendChild(name);
+  if (options.showOverrideToggle) {
+    head.appendChild(overrideWrap);
+  }
+
+  const content = document.createElement("div");
+  content.className = "field-content";
+
+  if (options.showOverrideToggle) {
+    overrideInput.addEventListener("change", () => {
+      param.overrideState = overrideInput.checked;
+      wrap.classList.toggle("disabled", !param.overrideState);
+      setControlEnabled(content, param.overrideState);
+      sendPatchDebounced({
+        path: param.path,
+        hasOverrideState: true,
+        overrideState: param.overrideState,
+        valueJson: param.currentValueJson || "null"
+      });
+    });
+  }
+
+  wrap.appendChild(head);
+  wrap.appendChild(content);
+  return { wrap, content };
+}
+
+function setControlEnabled(root, enabled) {
+  const controls = root.querySelectorAll("input, select, button");
+  controls.forEach((el) => {
+    el.disabled = !enabled;
+  });
+}
+
+function createToggleContent(param, content) {
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = parseJsonValue(param.currentValueJson, false) === true;
+  input.addEventListener("change", () => {
+    param.currentValueJson = input.checked ? "true" : "false";
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  });
+  content.appendChild(input);
+}
+
+function createNumberContent(param, content) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = param.hasMin ? param.min : -10;
+  range.max = param.hasMax ? param.max : 10;
+  range.step = param.hasStep ? param.step : 0.01;
+  range.value = parseFloat(param.currentValueJson || "0");
+
+  const number = document.createElement("input");
+  number.type = "number";
+  number.className = "small";
+  number.step = range.step;
+  number.value = range.value;
+
+  function emit(v) {
+    const normalized = Number.parseFloat(v);
+    if (!Number.isFinite(normalized)) return;
+    range.value = normalized;
+    number.value = normalized;
+    param.currentValueJson = String(normalized);
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  }
+
+  range.addEventListener("input", () => emit(range.value));
+  number.addEventListener("change", () => emit(number.value));
+  row.appendChild(range);
+  row.appendChild(number);
+  content.appendChild(row);
+}
+
+function createColorContent(param, content) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  const alpha = document.createElement("input");
+  alpha.type = "range";
+  alpha.min = 0;
+  alpha.max = 1;
+  alpha.step = 0.01;
+  const preview = document.createElement("div");
+  preview.className = "color-preview";
+
+  const value = parseJsonValue(param.currentValueJson, { r: 1, g: 1, b: 1, a: 1 });
+  picker.value = `#${toHex(value.r)}${toHex(value.g)}${toHex(value.b)}`;
+  alpha.value = Number.isFinite(value.a) ? value.a : 1;
+
+  function emit() {
+    const rgb = hexToRgb(picker.value);
+    const rgba = { r: rgb.r, g: rgb.g, b: rgb.b, a: Number.parseFloat(alpha.value) };
+    preview.style.background = `rgba(${Math.round(rgba.r * 255)}, ${Math.round(rgba.g * 255)}, ${Math.round(rgba.b * 255)}, ${rgba.a})`;
+    param.currentValueJson = JSON.stringify(rgba);
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  }
+
+  picker.addEventListener("input", emit);
+  alpha.addEventListener("input", emit);
+  emit();
+  row.appendChild(picker);
+  row.appendChild(alpha);
+  row.appendChild(preview);
+  content.appendChild(row);
+}
+
+function createVectorContent(param, content, dimensions) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const current = parseJsonValue(param.currentValueJson, {});
+  const keys = ["x", "y", "z", "w"].slice(0, dimensions);
+  const inputs = {};
+
+  keys.forEach((k) => {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.01";
+    input.className = "small";
+    input.value = Number.isFinite(current[k]) ? current[k] : 0;
+    row.appendChild(input);
+    inputs[k] = input;
+  });
+
+  function emit() {
+    const payload = {};
+    keys.forEach((k) => {
+      payload[k] = Number.parseFloat(inputs[k].value) || 0;
+    });
+    param.currentValueJson = JSON.stringify(payload);
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  }
+
+  keys.forEach((k) => inputs[k].addEventListener("change", emit));
+  content.appendChild(row);
+}
+
+function createTrackballLikeContent(param, content) {
+  const current = parseJsonValue(param.currentValueJson, { x: 1, y: 1, z: 1, w: 0 });
+  const normalized = normalizeRgbFromVector(current);
+  const hsv = rgbToHsv(normalized.r, normalized.g, normalized.b);
+  const theta0 = hsv.h * Math.PI * 2;
+  let wheelVec = {
+    x: Math.cos(theta0 + Math.PI * 0.5) * hsv.s,
+    y: Math.sin(theta0 - Math.PI * 0.5) * hsv.s
+  };
+
+  const container = document.createElement("div");
+  container.className = "trackball";
+  const wheel = document.createElement("div");
+  wheel.className = "trackball-wheel";
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.className = "trackball-picker";
+  picker.value = `#${toHex(normalized.r)}${toHex(normalized.g)}${toHex(normalized.b)}`;
+  const marker = document.createElement("div");
+  marker.className = "trackball-marker";
+  wheel.appendChild(picker);
+  wheel.appendChild(marker);
+
+  const sliders = document.createElement("div");
+  sliders.className = "trackball-sliders";
+
+  const intensityLabel = document.createElement("label");
+  intensityLabel.textContent = "Balance";
+  const intensity = document.createElement("input");
+  intensity.type = "range";
+  intensity.min = "0";
+  intensity.max = "2";
+  intensity.step = "0.01";
+  intensity.value = String(Math.max(0, Math.min(2, normalized.intensity)));
+
+  const offsetLabel = document.createElement("label");
+  offsetLabel.textContent = "Offset";
+  const offset = document.createElement("input");
+  offset.type = "range";
+  offset.min = "-1";
+  offset.max = "1";
+  offset.step = "0.01";
+  offset.value = String(Number.isFinite(current.w) ? current.w : 0);
+
+  const valueText = document.createElement("div");
+  valueText.className = "trackball-values";
+  const maxMarkerRadius = 42;
+
+  function setMarkerFromWheelVec() {
+    marker.style.left = `${60 + wheelVec.x * maxMarkerRadius}px`;
+    marker.style.top = `${60 + wheelVec.y * maxMarkerRadius}px`;
+  }
+
+  function updatePreview() {
+    const dx = wheelVec.x;
+    const dy = wheelVec.y;
+    const sat = Math.max(0, Math.min(1, Math.hypot(dx, dy)));
+    const angle = Math.atan2(dx, -dy);
+    const hue = 1 - ((angle > 0 ? angle : (Math.PI * 2) + angle) / (Math.PI * 2));
+    const rgb = hsvToRgb(hue, sat, 1);
+    picker.value = `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
+    const i = Number.parseFloat(intensity.value) || 0;
+    const w = Number.parseFloat(offset.value) || 0;
+    const payload = { x: rgb.r * i, y: rgb.g * i, z: rgb.b * i, w };
+    param.currentValueJson = JSON.stringify(payload);
+    marker.style.background = picker.value;
+    setMarkerFromWheelVec();
+    valueText.textContent = `R ${payload.x.toFixed(2)}  G ${payload.y.toFixed(2)}  B ${payload.z.toFixed(2)}  W ${payload.w.toFixed(2)}`;
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  }
+
+  function updateWheelVecFromPointer(evt) {
+    const rect = wheel.getBoundingClientRect();
+    const cx = rect.left + rect.width * 0.5;
+    const cy = rect.top + rect.height * 0.5;
+    let dx = (evt.clientX - cx) / maxMarkerRadius;
+    let dy = (evt.clientY - cy) / maxMarkerRadius;
+    const len = Math.hypot(dx, dy);
+    if (len > 1) {
+      dx /= len;
+      dy /= len;
+    }
+    wheelVec = { x: dx, y: dy };
+    updatePreview();
+  }
+
+  let dragging = false;
+  wheel.addEventListener("pointerdown", (evt) => {
+    dragging = true;
+    wheel.setPointerCapture(evt.pointerId);
+    updateWheelVecFromPointer(evt);
+  });
+  wheel.addEventListener("pointermove", (evt) => {
+    if (!dragging) return;
+    updateWheelVecFromPointer(evt);
+  });
+  wheel.addEventListener("pointerup", (evt) => {
+    dragging = false;
+    wheel.releasePointerCapture(evt.pointerId);
+  });
+  wheel.addEventListener("pointercancel", () => {
+    dragging = false;
+  });
+
+  picker.addEventListener("input", () => {
+    const rgb = hexToRgb(picker.value);
+    const h = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    const theta = h.h * Math.PI * 2;
+    wheelVec = {
+      x: Math.cos(theta + Math.PI * 0.5) * h.s,
+      y: Math.sin(theta - Math.PI * 0.5) * h.s
+    };
+    updatePreview();
+  });
+  intensity.addEventListener("input", updatePreview);
+  offset.addEventListener("input", updatePreview);
+
+  sliders.appendChild(intensityLabel);
+  sliders.appendChild(intensity);
+  sliders.appendChild(offsetLabel);
+  sliders.appendChild(offset);
+  sliders.appendChild(valueText);
+
+  container.appendChild(wheel);
+  container.appendChild(sliders);
+  content.appendChild(container);
+  setMarkerFromWheelVec();
+  updatePreview();
+}
+
+function createEnumContent(param, content) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const select = document.createElement("select");
+  const current = Number.parseInt(param.currentValueJson || "0", 10);
+  const optionsContainer = parseJsonValue(param.enumOptionsJson, { options: [] });
+  (optionsContainer.options || []).forEach((opt) => {
+    const option = document.createElement("option");
+    option.value = String(opt.value);
+    option.textContent = opt.label;
+    if (opt.value === current) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  });
+
+  select.addEventListener("change", () => {
+    param.currentValueJson = String(Number.parseInt(select.value, 10) || 0);
+    sendPatchDebounced({
+      path: param.path,
+      hasOverrideState: true,
+      overrideState: !!param.overrideState,
+      valueJson: param.currentValueJson
+    });
+  });
+
+  row.appendChild(select);
+  content.appendChild(row);
+}
+
+function createField(param, options) {
+  const { wrap, content } = createFieldFrame(param, options);
+  const componentType = options.componentTypeName || "";
+  const isTrackballTarget =
+    param.type === "vector4" &&
+    (componentType === "LiftGammaGain" || componentType === "ShadowsMidtonesHighlights");
+
+  if (isTrackballTarget) createTrackballLikeContent(param, content);
+  else if (param.type === "bool") createToggleContent(param, content);
+  else if (param.type === "int" || param.type === "float") createNumberContent(param, content);
+  else if (param.type === "color") createColorContent(param, content);
+  else if (param.type === "vector2") createVectorContent(param, content, 2);
+  else if (param.type === "vector3") createVectorContent(param, content, 3);
+  else if (param.type === "vector4") createVectorContent(param, content, 4);
+  else if (param.type === "enum") createEnumContent(param, content);
+  else {
+    const unsupported = document.createElement("div");
+    unsupported.textContent = `${param.type} is not supported`;
+    content.appendChild(unsupported);
+  }
+
+  const enabled = options.showOverrideToggle ? !!param.overrideState : true;
+  setControlEnabled(content, enabled);
+  return wrap;
+}
+
+function filterTonemappingParameters(component, sourceParams) {
+  if ((component.typeName || "") !== "Tonemapping") {
+    return sourceParams;
+  }
+
+  // Inspector寄せ: Tonemappingは常にModeを優先表示
+  const modeParam = sourceParams.find((p) => p.path.endsWith("/mode"));
+  if (!modeParam) {
+    return sourceParams;
+  }
+
+  return [modeParam];
+}
+
+function createComponentNode(component, options) {
+  if (options.onlyOverrideOn && !component.overrideState) {
+    return null;
+  }
+
+  const filtered = (component.parameters || []).filter((p) => {
+    return options.onlyOverrideOn ? !!p.overrideState : true;
+  });
+  const parameters = filterTonemappingParameters(component, filtered);
+  if (parameters.length === 0) {
+    return null;
+  }
+
+  const details = document.createElement("details");
+  details.className = "component";
+  details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "component-header";
+  const title = document.createElement("span");
+  title.textContent = component.displayName || component.typeName;
+  summary.appendChild(title);
+
+  if (options.showOverrideToggle) {
+    const componentOverrideWrap = document.createElement("label");
+    componentOverrideWrap.className = "override-wrap component-override";
+    const componentOverrideInput = document.createElement("input");
+    componentOverrideInput.type = "checkbox";
+    componentOverrideInput.checked = !!component.overrideState;
+    const componentOverrideText = document.createElement("span");
+    componentOverrideText.textContent = "Component Override";
+    componentOverrideWrap.appendChild(componentOverrideInput);
+    componentOverrideWrap.appendChild(componentOverrideText);
+
+    componentOverrideWrap.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+    });
+
+    componentOverrideInput.addEventListener("change", () => {
+      component.overrideState = componentOverrideInput.checked;
+      setControlEnabled(body, component.overrideState);
+      sendPatchDebounced({
+        path: component.componentPath,
+        hasOverrideState: true,
+        overrideState: component.overrideState,
+        valueJson: "null"
+      });
+    });
+
+    summary.appendChild(componentOverrideWrap);
+  }
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "component-body";
+  if (component.typeName === "ChannelMixer") {
+    renderChannelMixerFields(component, parameters, body, options);
+  } else {
+    parameters.forEach((param) => {
+      body.appendChild(createField(param, { ...options, componentTypeName: component.typeName }));
+    });
+  }
+  if (options.showOverrideToggle) {
+    setControlEnabled(body, !!component.overrideState);
+  }
+
+  details.appendChild(body);
+  return details;
+}
+
+function renderChannelMixerFields(component, parameters, body, options) {
+  const groups = {
+    red: { title: "Red", params: [] },
+    green: { title: "Green", params: [] },
+    blue: { title: "Blue", params: [] }
+  };
+
+  parameters.forEach((param) => {
+    if (param.path.endsWith("/redOutRedIn")) groups.red.params.push({ param, label: "Red" });
+    if (param.path.endsWith("/redOutGreenIn")) groups.red.params.push({ param, label: "Green" });
+    if (param.path.endsWith("/redOutBlueIn")) groups.red.params.push({ param, label: "Blue" });
+    if (param.path.endsWith("/greenOutRedIn")) groups.green.params.push({ param, label: "Red" });
+    if (param.path.endsWith("/greenOutGreenIn")) groups.green.params.push({ param, label: "Green" });
+    if (param.path.endsWith("/greenOutBlueIn")) groups.green.params.push({ param, label: "Blue" });
+    if (param.path.endsWith("/blueOutRedIn")) groups.blue.params.push({ param, label: "Red" });
+    if (param.path.endsWith("/blueOutGreenIn")) groups.blue.params.push({ param, label: "Green" });
+    if (param.path.endsWith("/blueOutBlueIn")) groups.blue.params.push({ param, label: "Blue" });
+  });
+
+  const tabKeys = ["red", "green", "blue"].filter((k) => groups[k].params.length > 0);
+  if (tabKeys.length === 0) {
+    return;
+  }
+
+  let selected = channelMixerTabByComponent[component.componentPath] || tabKeys[0];
+  if (!tabKeys.includes(selected)) {
+    selected = tabKeys[0];
+  }
+  channelMixerTabByComponent[component.componentPath] = selected;
+
+  const tabRow = document.createElement("div");
+  tabRow.className = "channel-tabs";
+  tabKeys.forEach((key) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = groups[key].title;
+    btn.className = key === selected ? "is-active" : "";
+    btn.addEventListener("click", () => {
+      channelMixerTabByComponent[component.componentPath] = key;
+      renderSchema(state.schema);
+    });
+    tabRow.appendChild(btn);
+  });
+  body.appendChild(tabRow);
+
+  groups[selected].params.forEach((item) => {
+    body.appendChild(createField(item.param, {
+      ...options,
+      componentTypeName: component.typeName,
+      fieldLabel: item.label
+    }));
+  });
+}
+
+function renderSchema(schema) {
+  appEl.innerHTML = "";
+  const options = {
+    onlyOverrideOn: currentView === "active",
+    showOverrideToggle: currentView === "all"
+  };
+
+  (schema.volumes || []).forEach((volume) => {
+    const visibleComponents = [];
+    (volume.components || []).forEach((component) => {
+      const node = createComponentNode(component, options);
+      if (node) {
+        visibleComponents.push(node);
+      }
+    });
+    if (visibleComponents.length === 0) {
+      return;
+    }
+
+    const volumeDetails = document.createElement("details");
+    volumeDetails.className = "volume";
+    volumeDetails.open = true;
+
+    const volumeSummary = document.createElement("summary");
+    volumeSummary.className = "volume-header";
+    volumeSummary.textContent = volume.displayName || volume.volumeId;
+    volumeDetails.appendChild(volumeSummary);
+
+    const volumeBody = document.createElement("div");
+    volumeBody.className = "volume-body";
+    visibleComponents.forEach((node) => {
+      volumeBody.appendChild(node);
+    });
+
+    volumeDetails.appendChild(volumeBody);
+    appEl.appendChild(volumeDetails);
+  });
+}
+
+function setView(viewName) {
+  currentView = viewName;
+  viewActiveBtn.classList.toggle("is-active", viewName === "active");
+  viewAllBtn.classList.toggle("is-active", viewName === "all");
+  if (state.schema) {
+    renderSchema(state.schema);
+  }
+}
+
+function mergeCurrentState(schema, patch) {
+  const valueMap = {};
+  const overrideMap = {};
+  (patch.entries || []).forEach((e) => {
+    valueMap[e.path] = e.valueJson;
+    if (e.hasOverrideState) {
+      overrideMap[e.path] = e.overrideState;
+    }
+  });
+
+  (schema.volumes || []).forEach((v) => {
+    (v.components || []).forEach((c) => {
+      if (overrideMap[c.componentPath] !== undefined) {
+        c.overrideState = overrideMap[c.componentPath];
+      }
+      (c.parameters || []).forEach((p) => {
+        if (valueMap[p.path] !== undefined) p.currentValueJson = valueMap[p.path];
+        if (overrideMap[p.path] !== undefined) p.overrideState = overrideMap[p.path];
+      });
+    });
+  });
+}
+
+async function refreshSchema() {
+  const schema = await api("/schema");
+  const liveState = await api("/state");
+  mergeCurrentState(schema, liveState);
+  state.schema = schema;
+  renderSchema(schema);
+}
+
+async function refreshPresetList(preferredName = "") {
+  const data = await api("/presets");
+  presetListState = data || { presets: [], selectedPreset: "" };
+
+  presetSelectEl.innerHTML = "";
+  (presetListState.presets || []).forEach((name) => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    presetSelectEl.appendChild(option);
+  });
+
+  const candidate = preferredName || presetListState.selectedPreset || (presetListState.presets || [])[0] || "";
+  if (candidate) {
+    presetSelectEl.value = candidate;
+    presetNameEl.value = candidate;
+  } else {
+    presetNameEl.value = "default";
+  }
+}
+
+function connectWebSocket() {
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${protocol}://${location.host}/ws`;
+  ws = new WebSocket(url);
+  ws.onopen = () => setStatus("Connected");
+  ws.onclose = () => {
+    setStatus("Disconnected. reconnecting...");
+    setTimeout(connectWebSocket, 1200);
+  };
+  ws.onerror = () => setStatus("WebSocket error");
+  ws.onmessage = async (evt) => {
+    try {
+      const message = JSON.parse(evt.data);
+      if (message.eventName === "state.updated" || message.eventName === "preset.loaded") {
+        await refreshSchema();
+      }
+      if (message.eventName === "error" && message.message) {
+        setStatus(`Server error: ${message.message}`);
+      }
+    } catch {
+    }
+  };
+}
+
+savePresetBtn.addEventListener("click", async () => {
+  try {
+    const name = (presetNameEl.value || "default").trim();
+    await api("/presets/save", "POST", { presetName: name });
+    await refreshPresetList(name);
+    setStatus("Saved");
+  } catch (e) {
+    setStatus(`Save error: ${e.message}`);
+  }
+});
+
+loadPresetBtn.addEventListener("click", async () => {
+  try {
+    const name = (presetSelectEl.value || presetNameEl.value || "default").trim();
+    await api("/presets/load", "POST", { presetName: name });
+    await refreshPresetList(name);
+    await refreshSchema();
+    setStatus("Loaded");
+  } catch (e) {
+    setStatus(`Load error: ${e.message}`);
+  }
+});
+
+renamePresetBtn.addEventListener("click", async () => {
+  const fromName = (presetSelectEl.value || "").trim();
+  const toName = (presetNameEl.value || "").trim();
+  if (!fromName || !toName) {
+    setStatus("Rename error: select and input preset name");
+    return;
+  }
+
+  try {
+    await api("/presets/rename", "POST", { fromPresetName: fromName, toPresetName: toName });
+    await refreshPresetList(toName);
+    setStatus("Renamed");
+  } catch (e) {
+    setStatus(`Rename error: ${e.message}`);
+  }
+});
+
+deletePresetBtn.addEventListener("click", async () => {
+  const name = (presetSelectEl.value || "").trim();
+  if (!name) {
+    setStatus("Delete error: no preset selected");
+    return;
+  }
+
+  if (!confirm(`Delete preset "${name}"?`)) {
+    return;
+  }
+
+  try {
+    await api("/presets/delete", "POST", { presetName: name });
+    await refreshPresetList();
+    await refreshSchema();
+    setStatus("Deleted");
+  } catch (e) {
+    setStatus(`Delete error: ${e.message}`);
+  }
+});
+
+presetSelectEl.addEventListener("change", async () => {
+  const selected = (presetSelectEl.value || "").trim();
+  if (!selected) {
+    return;
+  }
+
+  presetNameEl.value = selected;
+  try {
+    await api("/presets/select", "POST", { presetName: selected });
+  } catch (e) {
+    setStatus(`Preset select error: ${e.message}`);
+  }
+});
+
+viewActiveBtn.addEventListener("click", () => setView("active"));
+viewAllBtn.addEventListener("click", () => setView("all"));
+
+async function main() {
+  try {
+    setView(currentView);
+    await api("/health");
+    await refreshPresetList();
+    await refreshSchema();
+    connectWebSocket();
+    setStatus("Connected");
+  } catch (e) {
+    setStatus(`Connection error: ${e.message}`);
+  }
+}
+
+main();

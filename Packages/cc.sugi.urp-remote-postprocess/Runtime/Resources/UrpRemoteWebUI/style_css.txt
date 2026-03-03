@@ -1,0 +1,278 @@
+:root {
+  --bg: #10141a;
+  --bg-elev: #1a212b;
+  --card: #202938;
+  --text: #f2f5f9;
+  --muted: #9eb0c7;
+  --accent: #33c27f;
+  --danger: #e95656;
+  --border: #344156;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 20% -20%, #2a3850, transparent 50%),
+    radial-gradient(circle at 120% 20%, #18313f, transparent 40%),
+    var(--bg);
+  font-family: "Segoe UI", "Hiragino Sans", sans-serif;
+}
+
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 12px;
+  background: rgba(16, 20, 26, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.status {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.preset-bar {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto auto auto;
+  gap: 8px;
+}
+
+.view-switch {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.view-switch button.is-active {
+  background: var(--accent);
+  color: #0d1b14;
+  border-color: #58d99e;
+}
+
+main {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+input, button, select {
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  padding: 0 10px;
+}
+
+button {
+  background: #2c3b52;
+}
+
+button.danger {
+  background: #5a2e34;
+  border-color: #8d3f4a;
+}
+
+.component {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.volume {
+  border: 1px solid #3f506d;
+  border-radius: 14px;
+  background: rgba(23, 30, 42, 0.9);
+  overflow: hidden;
+}
+
+.volume-header {
+  list-style: none;
+  width: 100%;
+  padding: 12px;
+  cursor: pointer;
+  background: #223047;
+  font-weight: 600;
+}
+
+.volume-header::-webkit-details-marker {
+  display: none;
+}
+
+.volume-body {
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.component-header {
+  list-style: none;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  cursor: pointer;
+  background: #283246;
+}
+
+.component-header::-webkit-details-marker {
+  display: none;
+}
+
+.component-body {
+  padding: 10px;
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.override-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.component-override {
+  font-size: 11px;
+}
+
+.override-wrap input {
+  min-height: 18px;
+  width: 18px;
+}
+
+.field.disabled {
+  opacity: 0.55;
+}
+
+.field-content {
+  display: grid;
+  gap: 8px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row input[type="range"] {
+  flex: 1;
+}
+
+.small {
+  width: 88px;
+}
+
+.color-preview {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.channel-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+
+.channel-tabs button {
+  min-height: 36px;
+  border-radius: 8px;
+  background: #25344a;
+}
+
+.channel-tabs button.is-active {
+  background: #4c6f95;
+  border-color: #6b8fb8;
+}
+
+.trackball {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.trackball-wheel {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border-radius: 999px;
+  border: 2px solid #2d374a;
+  background:
+    radial-gradient(circle at center, rgba(28, 35, 48, 0.92) 42%, transparent 44%),
+    conic-gradient(from 0deg, #ff0000, #ff00ff, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000);
+  overflow: hidden;
+}
+
+.trackball-picker {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.trackball-marker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid #e8edf7;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  background: #fff;
+}
+
+.trackball-sliders {
+  display: grid;
+  gap: 4px;
+}
+
+.trackball-sliders label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trackball-values {
+  font-size: 12px;
+  color: #c6d5ec;
+  margin-top: 2px;
+}
