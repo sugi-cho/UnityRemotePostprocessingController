@@ -17,6 +17,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         private readonly int port;
         private readonly RemotePostprocessController controller;
         private readonly WsEventHub wsEventHub;
+        private readonly AuthSessionService authSessionService;
         private readonly WebUiAssetProvider webUiAssetProvider;
         private readonly object socketLock = new object();
         private readonly System.Collections.Generic.List<WebSocket> sockets = new System.Collections.Generic.List<WebSocket>();
@@ -24,11 +25,12 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         private Thread workerThread;
         private volatile bool isRunning;
 
-        public HttpApiServer(int port, RemotePostprocessController controller, WsEventHub wsEventHub)
+        public HttpApiServer(int port, RemotePostprocessController controller, WsEventHub wsEventHub, string remotePostprocessRootPath)
         {
             this.port = port;
             this.controller = controller;
             this.wsEventHub = wsEventHub;
+            authSessionService = new AuthSessionService(remotePostprocessRootPath);
             webUiAssetProvider = new WebUiAssetProvider();
         }
 
@@ -161,6 +163,52 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             {
                 SafeWriteJson(response, 200, "{\"ok\":true}");
                 return;
+            }
+
+            if (request.HttpMethod == "GET" && path == "/auth/status")
+            {
+                HandleAuthStatus(request, response);
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/auth/setup")
+            {
+                HandleAuthSetup(request, response);
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/auth/login")
+            {
+                HandleAuthLogin(request, response);
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/auth/logout")
+            {
+                if (!TryAuthenticateRequest(request, out string token))
+                {
+                    WriteAuthError(response, "unauthorized", 401);
+                    return;
+                }
+
+                authSessionService.RevokeToken(token);
+                SafeWriteJson(response, 200, "{\"ok\":true}");
+                return;
+            }
+
+            if (IsProtectedPath(path))
+            {
+                if (authSessionService.RequiresSetup)
+                {
+                    WriteAuthError(response, "setup_required", 401);
+                    return;
+                }
+
+                if (!TryAuthenticateRequest(request, out _))
+                {
+                    WriteAuthError(response, "unauthorized", 401);
+                    return;
+                }
             }
 
             if (request.HttpMethod == "GET" && path == "/ws")
@@ -326,6 +374,181 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             }
 
             SafeWriteJson(response, 404, "{\"ok\":false,\"error\":\"not_found\"}");
+        }
+
+        private void HandleAuthStatus(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            bool requiresSetup = authSessionService.RequiresSetup;
+            bool authenticated = false;
+            if (!requiresSetup && TryReadAccessToken(request, out string token))
+            {
+                authenticated = authSessionService.ValidateToken(token);
+            }
+
+            var payload = new AuthStatusResponse
+            {
+                requiresSetup = requiresSetup,
+                authenticated = authenticated
+            };
+            SafeWriteJson(response, 200, JsonUtility.ToJson(payload));
+        }
+
+        private void HandleAuthSetup(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            if (!authSessionService.RequiresSetup)
+            {
+                WriteAuthError(response, "already_configured", 409);
+                return;
+            }
+
+            string body = ReadRequestBody(request);
+            AuthSetupRequest setup = TryParseJson<AuthSetupRequest>(body);
+            if (setup == null)
+            {
+                WriteAuthError(response, "invalid_request", 400);
+                return;
+            }
+
+            string password = setup.password ?? string.Empty;
+            string confirmPassword = setup.confirmPassword ?? string.Empty;
+            if (!string.Equals(password, confirmPassword, StringComparison.Ordinal))
+            {
+                WriteAuthError(response, "password_mismatch", 400);
+                return;
+            }
+
+            if (!authSessionService.TrySetup(password, out string setupError))
+            {
+                int setupStatus = string.Equals(setupError, "already_configured", StringComparison.Ordinal) ? 409 : 400;
+                WriteAuthError(response, setupError, setupStatus);
+                return;
+            }
+
+            if (!authSessionService.TryLogin(password, out string token, out int expiresInSeconds, out string loginError))
+            {
+                WriteAuthError(response, loginError, 500);
+                return;
+            }
+
+            var payload = new AuthTokenResponse
+            {
+                token = token,
+                expiresInSeconds = expiresInSeconds,
+                requiresSetup = false
+            };
+            SafeWriteJson(response, 200, JsonUtility.ToJson(payload));
+        }
+
+        private void HandleAuthLogin(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            if (authSessionService.RequiresSetup)
+            {
+                WriteAuthError(response, "setup_required", 409);
+                return;
+            }
+
+            string body = ReadRequestBody(request);
+            AuthLoginRequest login = TryParseJson<AuthLoginRequest>(body);
+            if (login == null)
+            {
+                WriteAuthError(response, "invalid_request", 400);
+                return;
+            }
+
+            if (!authSessionService.TryLogin(login.password ?? string.Empty, out string token, out int expiresInSeconds, out string error))
+            {
+                int statusCode = 401;
+                int retryAfterSeconds = 0;
+                if (string.Equals(error, "setup_required", StringComparison.Ordinal))
+                {
+                    statusCode = 409;
+                }
+                else if (string.Equals(error, "locked", StringComparison.Ordinal))
+                {
+                    statusCode = 429;
+                    retryAfterSeconds = authSessionService.GetRetryAfterSeconds();
+                }
+                else if (string.Equals(error, "password_required", StringComparison.Ordinal)
+                    || string.Equals(error, "password_too_short", StringComparison.Ordinal)
+                    || string.Equals(error, "password_too_long", StringComparison.Ordinal))
+                {
+                    statusCode = 400;
+                }
+
+                WriteAuthError(response, error, statusCode, retryAfterSeconds);
+                return;
+            }
+
+            var payload = new AuthTokenResponse
+            {
+                token = token,
+                expiresInSeconds = expiresInSeconds,
+                requiresSetup = false
+            };
+            SafeWriteJson(response, 200, JsonUtility.ToJson(payload));
+        }
+
+        private bool TryAuthenticateRequest(HttpListenerRequest request, out string token)
+        {
+            token = string.Empty;
+            if (!TryReadAccessToken(request, out string received))
+            {
+                return false;
+            }
+
+            token = received;
+            return authSessionService.ValidateToken(received);
+        }
+
+        private static bool TryReadAccessToken(HttpListenerRequest request, out string token)
+        {
+            token = ExtractBearerToken(request?.Headers?["Authorization"]);
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                return true;
+            }
+
+            token = request?.QueryString?["token"]?.Trim() ?? string.Empty;
+            return !string.IsNullOrEmpty(token);
+        }
+
+        private static string ExtractBearerToken(string authorizationHeader)
+        {
+            if (string.IsNullOrWhiteSpace(authorizationHeader))
+            {
+                return string.Empty;
+            }
+
+            const string prefix = "Bearer ";
+            if (authorizationHeader.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return authorizationHeader.Substring(prefix.Length).Trim();
+            }
+
+            return authorizationHeader.Trim();
+        }
+
+        private static bool IsProtectedPath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return false;
+            }
+
+            return string.Equals(path, "/schema", StringComparison.Ordinal)
+                || string.Equals(path, "/state", StringComparison.Ordinal)
+                || string.Equals(path, "/ws", StringComparison.Ordinal)
+                || path.StartsWith("/presets", StringComparison.Ordinal);
+        }
+
+        private static void WriteAuthError(HttpListenerResponse response, string error, int statusCode, int retryAfterSeconds = 0)
+        {
+            var payload = new AuthErrorResponse
+            {
+                error = string.IsNullOrWhiteSpace(error) ? "auth_error" : error.Trim(),
+                retryAfterSeconds = Math.Max(0, retryAfterSeconds)
+            };
+            SafeWriteJson(response, statusCode, JsonUtility.ToJson(payload));
         }
 
         private void AcceptWebSocket(HttpListenerContext context)
@@ -524,7 +747,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         {
             response.Headers["Access-Control-Allow-Origin"] = "*";
             response.Headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,OPTIONS";
-            response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+            response.Headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
         }
 
         private static void SafeWriteJson(HttpListenerResponse response, int statusCode, string json)
@@ -550,6 +773,44 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             {
                 response.Close();
             }
+        }
+
+        [Serializable]
+        private sealed class AuthStatusResponse
+        {
+            public bool ok = true;
+            public bool requiresSetup;
+            public bool authenticated;
+        }
+
+        [Serializable]
+        private sealed class AuthSetupRequest
+        {
+            public string password = string.Empty;
+            public string confirmPassword = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class AuthLoginRequest
+        {
+            public string password = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class AuthTokenResponse
+        {
+            public bool ok = true;
+            public string token = string.Empty;
+            public int expiresInSeconds;
+            public bool requiresSetup;
+        }
+
+        [Serializable]
+        private sealed class AuthErrorResponse
+        {
+            public bool ok = false;
+            public string error = "auth_error";
+            public int retryAfterSeconds;
         }
 
         [Serializable]

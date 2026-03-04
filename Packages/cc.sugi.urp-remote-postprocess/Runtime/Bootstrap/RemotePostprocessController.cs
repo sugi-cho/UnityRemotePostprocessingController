@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using Cc.Sugi.UrpRemotePostprocess.Runtime.Core;
 using Cc.Sugi.UrpRemotePostprocess.Runtime.Model;
@@ -39,6 +40,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Bootstrap
         private int mainThreadId;
         private bool isCoreInitialized;
         private string selectedPresetNameCache = string.Empty;
+        private string remotePostprocessRootPath = string.Empty;
 
         public RemoteSchema CurrentSchema => scanResult != null ? scanResult.schema : null;
         public int Port => port;
@@ -251,7 +253,11 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Bootstrap
                 {
                     if (httpApiServer == null)
                     {
-                        httpApiServer = new HttpApiServer(port, this, wsEventHub);
+                        if (string.IsNullOrEmpty(remotePostprocessRootPath))
+                        {
+                            remotePostprocessRootPath = GetRemotePostprocessRootPath();
+                        }
+                        httpApiServer = new HttpApiServer(port, this, wsEventHub, remotePostprocessRootPath);
                     }
                     httpApiServer.Start();
                 }
@@ -276,12 +282,13 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Bootstrap
             presetRepository = new PresetRepository();
             wsEventHub = new WsEventHub();
             selectedPresetNameCache = SanitizePresetName(PlayerPrefs.GetString(SelectedPresetPlayerPrefsKey, string.Empty));
+            remotePostprocessRootPath = GetRemotePostprocessRootPath();
             isCoreInitialized = true;
 
             TryLoadStartupPreset();
             if (startServer)
             {
-                httpApiServer = new HttpApiServer(port, this, wsEventHub);
+                httpApiServer = new HttpApiServer(port, this, wsEventHub, remotePostprocessRootPath);
                 httpApiServer.Start();
             }
         }
@@ -471,6 +478,11 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Bootstrap
         private static string SanitizePresetName(string presetName)
         {
             return string.IsNullOrWhiteSpace(presetName) ? string.Empty : presetName.Trim();
+        }
+
+        private static string GetRemotePostprocessRootPath()
+        {
+            return Path.Combine(Application.persistentDataPath, "RemotePostprocess");
         }
 
 #if UNITY_EDITOR

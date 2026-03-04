@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
   <title>URP Remote Postprocess</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -10,17 +10,26 @@
   <header class="header">
     <h1>URP Remote Postprocess</h1>
     <div id="status" class="status">Connecting...</div>
-    <div class="view-switch">
-      <button id="viewActiveBtn" class="is-active" type="button">Override ON</button>
-      <button id="viewAllBtn" type="button">Volume All</button>
+    <div id="authPanel" class="auth-panel">
+      <input id="authPassword" type="password" placeholder="password" autocomplete="current-password" />
+      <input id="authPasswordConfirm" type="password" placeholder="confirm password" autocomplete="new-password" />
+      <button id="authSetupBtn" type="button">Set Password</button>
+      <button id="authLoginBtn" type="button">Login</button>
+      <button id="authLogoutBtn" type="button">Logout</button>
     </div>
-    <div class="preset-bar">
-      <select id="presetSelect"></select>
-      <input id="presetName" type="text" placeholder="preset name" value="default" />
-      <button id="savePresetBtn">Save</button>
-      <button id="loadPresetBtn">Load</button>
-      <button id="renamePresetBtn">Rename</button>
-      <button id="deletePresetBtn" class="danger">Delete</button>
+    <div id="controlPanel">
+      <div class="view-switch">
+        <button id="viewActiveBtn" class="is-active" type="button">Override ON</button>
+        <button id="viewAllBtn" type="button">Volume All</button>
+      </div>
+      <div class="preset-bar">
+        <select id="presetSelect"></select>
+        <input id="presetName" type="text" placeholder="preset name" value="default" />
+        <button id="savePresetBtn">Save</button>
+        <button id="loadPresetBtn">Load</button>
+        <button id="renamePresetBtn">Rename</button>
+        <button id="deletePresetBtn" class="danger">Delete</button>
+      </div>
     </div>
   </header>
   <main id="app"></main>

@@ -2,8 +2,16 @@ const state = {
   schema: null
 };
 
+const AUTH_TOKEN_STORAGE_KEY = "cc.sugi.urp-remote-postprocess.authToken";
 const appEl = document.getElementById("app");
 const statusEl = document.getElementById("status");
+const authPanelEl = document.getElementById("authPanel");
+const authPasswordEl = document.getElementById("authPassword");
+const authPasswordConfirmEl = document.getElementById("authPasswordConfirm");
+const authSetupBtn = document.getElementById("authSetupBtn");
+const authLoginBtn = document.getElementById("authLoginBtn");
+const authLogoutBtn = document.getElementById("authLogoutBtn");
+const controlPanelEl = document.getElementById("controlPanel");
 const presetSelectEl = document.getElementById("presetSelect");
 const presetNameEl = document.getElementById("presetName");
 const savePresetBtn = document.getElementById("savePresetBtn");
@@ -18,23 +26,197 @@ const initialView = viewMatch ? viewMatch[1].toLowerCase() : null;
 let currentView = initialView === "all" ? "all" : "active";
 let presetListState = { presets: [], selectedPreset: "" };
 const channelMixerTabByComponent = {};
+const authState = {
+  token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "",
+  requiresSetup: false,
+  authenticated: false
+};
+let gestureLockCount = 0;
+
+function setAuthToken(token) {
+  authState.token = token || "";
+  if (authState.token) {
+    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authState.token);
+  } else {
+    localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  }
+}
+
+function closeWebSocket() {
+  if (!ws) {
+    return;
+  }
+
+  try {
+    ws.onclose = null;
+    ws.close();
+  } catch {
+  }
+  ws = null;
+}
+
+function setAuthUiMode(mode) {
+  authPanelEl.classList.toggle("is-setup", mode === "setup");
+  authPanelEl.classList.toggle("is-login", mode === "login");
+  authPanelEl.classList.toggle("is-authenticated", mode === "authenticated");
+}
+
+function applyAuthUiState() {
+  if (authState.authenticated) {
+    setAuthUiMode("authenticated");
+    controlPanelEl.hidden = false;
+    appEl.hidden = false;
+    authPasswordEl.value = "";
+    authPasswordConfirmEl.value = "";
+    return;
+  }
+
+  controlPanelEl.hidden = true;
+  appEl.hidden = true;
+  appEl.innerHTML = "";
+  state.schema = null;
+
+  if (authState.requiresSetup) {
+    setAuthUiMode("setup");
+    authPasswordEl.placeholder = "new password";
+    authPasswordEl.autocomplete = "new-password";
+  } else {
+    setAuthUiMode("login");
+    authPasswordEl.placeholder = "password";
+    authPasswordEl.autocomplete = "current-password";
+  }
+}
+
+function beginGestureLock() {
+  gestureLockCount += 1;
+  document.body.classList.add("gesture-lock");
+}
+
+function endGestureLock() {
+  gestureLockCount = Math.max(0, gestureLockCount - 1);
+  if (gestureLockCount === 0) {
+    document.body.classList.remove("gesture-lock");
+  }
+}
+
+function bindGestureLock(element) {
+  if (!element) {
+    return;
+  }
+
+  let locked = false;
+
+  const lock = () => {
+    if (locked) {
+      return;
+    }
+    locked = true;
+    beginGestureLock();
+  };
+
+  const unlock = () => {
+    if (!locked) {
+      return;
+    }
+    locked = false;
+    endGestureLock();
+  };
+
+  element.addEventListener("touchstart", lock, { passive: true });
+  element.addEventListener("touchend", unlock, { passive: true });
+  element.addEventListener("touchcancel", unlock, { passive: true });
+  element.addEventListener("pointerdown", (evt) => {
+    if (evt.pointerType === "touch") {
+      lock();
+    }
+  }, { passive: true });
+  element.addEventListener("pointerup", unlock, { passive: true });
+  element.addEventListener("pointercancel", unlock, { passive: true });
+  element.addEventListener("lostpointercapture", unlock, { passive: true });
+}
+
+window.addEventListener("touchend", () => {
+  if (gestureLockCount > 0) {
+    gestureLockCount = 0;
+    document.body.classList.remove("gesture-lock");
+  }
+}, { passive: true });
+
+window.addEventListener("touchcancel", () => {
+  if (gestureLockCount > 0) {
+    gestureLockCount = 0;
+    document.body.classList.remove("gesture-lock");
+  }
+}, { passive: true });
 
 function setStatus(text) {
   statusEl.textContent = text;
 }
 
-async function api(path, method = "GET", body = null) {
+async function api(path, method = "GET", body = null, options = {}) {
+  const includeAuth = options.includeAuth !== false;
+  const handleUnauthorized = options.handleUnauthorized !== false;
+  const headers = {};
+  if (body !== null) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (includeAuth && authState.token) {
+    headers.Authorization = `Bearer ${authState.token}`;
+  }
+
   const res = await fetch(path, {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: body ? JSON.stringify(body) : null
   });
+
   const raw = await res.text();
-  const data = raw ? JSON.parse(raw) : {};
+  let data = {};
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = {};
+    }
+  }
+
   if (!res.ok) {
-    throw new Error(data.error || res.statusText);
+    const error = new Error(data.error || res.statusText || "request_failed");
+    error.status = res.status;
+    error.error = data.error || "request_failed";
+    error.retryAfterSeconds = Number.isFinite(data.retryAfterSeconds) ? data.retryAfterSeconds : 0;
+    if (res.status === 401 && handleUnauthorized) {
+      await handleUnauthorizedError(error.error);
+    }
+    throw error;
   }
   return data;
+}
+
+async function refreshAuthStatus() {
+  const status = await api("/auth/status", "GET", null, { includeAuth: true, handleUnauthorized: false });
+  authState.requiresSetup = !!status.requiresSetup;
+  authState.authenticated = !!status.authenticated;
+
+  if (authState.requiresSetup || !authState.authenticated) {
+    setAuthToken("");
+    closeWebSocket();
+  }
+
+  applyAuthUiState();
+  return status;
+}
+
+async function handleUnauthorizedError() {
+  authState.authenticated = false;
+  setAuthToken("");
+  closeWebSocket();
+  await refreshAuthStatus();
+  if (authState.requiresSetup) {
+    setStatus("Password setup required");
+  } else {
+    setStatus("Authentication required");
+  }
 }
 
 function debounce(fn, wait) {
@@ -117,6 +299,47 @@ function normalizeRgbFromVector(v) {
   return { r: x / max, g: y / max, b: z / max, intensity: max };
 }
 
+function roundTo3Decimals(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function formatNumericValue(value, allowFloat) {
+  if (!allowFloat) {
+    return String(Number.parseInt(value, 10) || 0);
+  }
+  return String(Number(roundTo3Decimals(value).toFixed(3)));
+}
+
+function sanitizeNumericText(raw, allowFloat) {
+  const source = String(raw ?? "");
+  let result = "";
+  let hasSign = false;
+  let hasDot = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch >= "0" && ch <= "9") {
+      result += ch;
+      continue;
+    }
+    if (ch === "-" && !hasSign && result.length === 0) {
+      hasSign = true;
+      result += ch;
+      continue;
+    }
+    if (allowFloat && ch === "." && !hasDot) {
+      hasDot = true;
+      result += ch;
+    }
+  }
+
+  return result;
+}
+
+function isIntermediateNumericText(text, allowFloat) {
+  return text === "" || text === "-" || (allowFloat && (text === "." || text === "-."));
+}
+
 function createFieldFrame(param, options) {
   const wrap = document.createElement("div");
   wrap.className = "field";
@@ -192,25 +415,41 @@ function createToggleContent(param, content) {
 function createNumberContent(param, content) {
   const row = document.createElement("div");
   row.className = "row";
+  const allowFloat = param.type !== "int";
   const range = document.createElement("input");
   range.type = "range";
   range.min = param.hasMin ? param.min : -10;
   range.max = param.hasMax ? param.max : 10;
   range.step = param.hasStep ? param.step : 0.01;
-  range.value = parseFloat(param.currentValueJson || "0");
+  const initialRaw = allowFloat
+    ? Number.parseFloat(param.currentValueJson || "0")
+    : Number.parseInt(param.currentValueJson || "0", 10);
+  const initialValue = Number.isFinite(initialRaw)
+    ? (allowFloat ? roundTo3Decimals(initialRaw) : initialRaw)
+    : 0;
+  range.value = String(initialValue);
 
   const number = document.createElement("input");
-  number.type = "number";
+  number.type = "text";
   number.className = "small";
-  number.step = range.step;
-  number.value = range.value;
+  number.inputMode = allowFloat ? "decimal" : "numeric";
+  number.pattern = allowFloat ? "-?[0-9]*[.]?[0-9]*" : "-?[0-9]*";
+  number.autocomplete = "off";
+  number.spellcheck = false;
+  number.value = formatNumericValue(initialValue, allowFloat);
 
   function emit(v) {
-    const normalized = Number.parseFloat(v);
-    if (!Number.isFinite(normalized)) return;
-    range.value = normalized;
-    number.value = normalized;
-    param.currentValueJson = String(normalized);
+    let normalized = allowFloat ? Number.parseFloat(v) : Number.parseInt(v, 10);
+    if (!Number.isFinite(normalized)) {
+      number.value = String(range.value);
+      return;
+    }
+    if (allowFloat) {
+      normalized = roundTo3Decimals(normalized);
+    }
+    range.value = String(normalized);
+    number.value = formatNumericValue(normalized, allowFloat);
+    param.currentValueJson = number.value;
     sendPatchDebounced({
       path: param.path,
       hasOverrideState: true,
@@ -219,8 +458,34 @@ function createNumberContent(param, content) {
     });
   }
 
+  function commitNumberInput() {
+    const filtered = sanitizeNumericText(number.value, allowFloat);
+    number.value = filtered;
+    if (isIntermediateNumericText(filtered, allowFloat)) {
+      number.value = String(range.value);
+      return;
+    }
+    emit(filtered);
+  }
+
   range.addEventListener("input", () => emit(range.value));
-  number.addEventListener("change", () => emit(number.value));
+  number.addEventListener("input", () => {
+    const filtered = sanitizeNumericText(number.value, allowFloat);
+    if (filtered !== number.value) {
+      number.value = filtered;
+    }
+  });
+  number.addEventListener("change", commitNumberInput);
+  number.addEventListener("blur", commitNumberInput);
+  number.addEventListener("focus", () => {
+    number.select();
+  });
+  number.addEventListener("pointerup", () => {
+    if (document.activeElement === number) {
+      number.select();
+    }
+  });
+  bindGestureLock(range);
   row.appendChild(range);
   row.appendChild(number);
   content.appendChild(row);
@@ -258,6 +523,8 @@ function createColorContent(param, content) {
 
   picker.addEventListener("input", emit);
   alpha.addEventListener("input", emit);
+  bindGestureLock(picker);
+  bindGestureLock(alpha);
   emit();
   row.appendChild(picker);
   row.appendChild(alpha);
@@ -344,13 +611,89 @@ function createTrackballLikeContent(param, content) {
   offset.step = "0.01";
   offset.value = String(Number.isFinite(current.w) ? current.w : 0);
 
-  const valueText = document.createElement("div");
-  valueText.className = "trackball-values";
+  const valueEditors = document.createElement("div");
+  valueEditors.className = "trackball-values";
+  const rgbwInputs = {};
+  const labelByKey = { x: "R", y: "G", z: "B", w: "W" };
+  ["x", "y", "z", "w"].forEach((key) => {
+    const item = document.createElement("label");
+    item.className = "trackball-value-item";
+    const label = document.createElement("span");
+    label.textContent = labelByKey[key] || key.toUpperCase();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "trackball-value-input";
+    input.inputMode = "decimal";
+    input.pattern = "-?[0-9]*[.]?[0-9]*";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.addEventListener("input", () => {
+      const filtered = sanitizeNumericText(input.value, true);
+      if (filtered !== input.value) {
+        input.value = filtered;
+      }
+    });
+    input.addEventListener("focus", () => input.select());
+    input.addEventListener("pointerup", () => {
+      if (document.activeElement === input) {
+        input.select();
+      }
+    });
+    item.appendChild(label);
+    item.appendChild(input);
+    valueEditors.appendChild(item);
+    rgbwInputs[key] = input;
+  });
   const maxMarkerRadius = 42;
 
   function setMarkerFromWheelVec() {
     marker.style.left = `${60 + wheelVec.x * maxMarkerRadius}px`;
     marker.style.top = `${60 + wheelVec.y * maxMarkerRadius}px`;
+  }
+
+  function setRgbwInputs(payload) {
+    rgbwInputs.x.value = formatNumericValue(payload.x, true);
+    rgbwInputs.y.value = formatNumericValue(payload.y, true);
+    rgbwInputs.z.value = formatNumericValue(payload.z, true);
+    rgbwInputs.w.value = formatNumericValue(payload.w, true);
+  }
+
+  function parseRgbwInputValue(key, fallback) {
+    const input = rgbwInputs[key];
+    const filtered = sanitizeNumericText(input.value, true);
+    input.value = filtered;
+    if (isIntermediateNumericText(filtered, true)) {
+      return fallback;
+    }
+    const parsed = Number.parseFloat(filtered);
+    return Number.isFinite(parsed) ? roundTo3Decimals(parsed) : fallback;
+  }
+
+  function applyPayloadFromRgbw(payload) {
+    const x = Number.isFinite(payload.x) ? payload.x : 0;
+    const y = Number.isFinite(payload.y) ? payload.y : 0;
+    const z = Number.isFinite(payload.z) ? payload.z : 0;
+    const w = Number.isFinite(payload.w) ? payload.w : 0;
+    const normalizedRgb = normalizeRgbFromVector({ x, y, z });
+    const hsvFromRgb = rgbToHsv(normalizedRgb.r, normalizedRgb.g, normalizedRgb.b);
+    const theta = hsvFromRgb.h * Math.PI * 2;
+    wheelVec = {
+      x: Math.cos(theta + Math.PI * 0.5) * hsvFromRgb.s,
+      y: Math.sin(theta - Math.PI * 0.5) * hsvFromRgb.s
+    };
+    intensity.value = String(Math.max(0, Math.min(2, roundTo3Decimals(normalizedRgb.intensity))));
+    offset.value = String(Math.max(-1, Math.min(1, roundTo3Decimals(w))));
+    updatePreview();
+  }
+
+  function commitRgbwInputs() {
+    const currentPayload = parseJsonValue(param.currentValueJson, { x: 0, y: 0, z: 0, w: 0 });
+    applyPayloadFromRgbw({
+      x: parseRgbwInputValue("x", Number.isFinite(currentPayload.x) ? currentPayload.x : 0),
+      y: parseRgbwInputValue("y", Number.isFinite(currentPayload.y) ? currentPayload.y : 0),
+      z: parseRgbwInputValue("z", Number.isFinite(currentPayload.z) ? currentPayload.z : 0),
+      w: parseRgbwInputValue("w", Number.isFinite(currentPayload.w) ? currentPayload.w : 0)
+    });
   }
 
   function updatePreview() {
@@ -363,11 +706,16 @@ function createTrackballLikeContent(param, content) {
     picker.value = `#${toHex(rgb.r)}${toHex(rgb.g)}${toHex(rgb.b)}`;
     const i = Number.parseFloat(intensity.value) || 0;
     const w = Number.parseFloat(offset.value) || 0;
-    const payload = { x: rgb.r * i, y: rgb.g * i, z: rgb.b * i, w };
+    const payload = {
+      x: roundTo3Decimals(rgb.r * i),
+      y: roundTo3Decimals(rgb.g * i),
+      z: roundTo3Decimals(rgb.b * i),
+      w: roundTo3Decimals(w)
+    };
     param.currentValueJson = JSON.stringify(payload);
     marker.style.background = picker.value;
     setMarkerFromWheelVec();
-    valueText.textContent = `R ${payload.x.toFixed(2)}  G ${payload.y.toFixed(2)}  B ${payload.z.toFixed(2)}  W ${payload.w.toFixed(2)}`;
+    setRgbwInputs(payload);
     sendPatchDebounced({
       path: param.path,
       hasOverrideState: true,
@@ -408,6 +756,7 @@ function createTrackballLikeContent(param, content) {
   wheel.addEventListener("pointercancel", () => {
     dragging = false;
   });
+  bindGestureLock(wheel);
 
   picker.addEventListener("input", () => {
     const rgb = hexToRgb(picker.value);
@@ -421,12 +770,18 @@ function createTrackballLikeContent(param, content) {
   });
   intensity.addEventListener("input", updatePreview);
   offset.addEventListener("input", updatePreview);
+  bindGestureLock(intensity);
+  bindGestureLock(offset);
+  ["x", "y", "z", "w"].forEach((key) => {
+    rgbwInputs[key].addEventListener("change", commitRgbwInputs);
+    rgbwInputs[key].addEventListener("blur", commitRgbwInputs);
+  });
 
   sliders.appendChild(intensityLabel);
   sliders.appendChild(intensity);
   sliders.appendChild(offsetLabel);
   sliders.appendChild(offset);
-  sliders.appendChild(valueText);
+  sliders.appendChild(valueEditors);
 
   container.appendChild(wheel);
   container.appendChild(sliders);
@@ -730,15 +1085,44 @@ async function refreshPresetList(preferredName = "") {
 }
 
 function connectWebSocket() {
+  if (!authState.authenticated || !authState.token) {
+    return;
+  }
+
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${protocol}://${location.host}/ws`;
+  const tokenQuery = `token=${encodeURIComponent(authState.token)}`;
+  const url = `${protocol}://${location.host}/ws?${tokenQuery}`;
   ws = new WebSocket(url);
   ws.onopen = () => setStatus("Connected");
-  ws.onclose = () => {
+  ws.onclose = async () => {
+    ws = null;
+    if (!authState.authenticated) {
+      return;
+    }
+
     setStatus("Disconnected. reconnecting...");
-    setTimeout(connectWebSocket, 1200);
+    setTimeout(async () => {
+      if (!authState.authenticated) {
+        return;
+      }
+
+      try {
+        await refreshAuthStatus();
+        if (!authState.authenticated) {
+          setStatus(authState.requiresSetup ? "Password setup required" : "Authentication required");
+          return;
+        }
+        connectWebSocket();
+      } catch (e) {
+        setStatus(`Reconnect error: ${e.message}`);
+      }
+    }, 1200);
   };
-  ws.onerror = () => setStatus("WebSocket error");
+  ws.onerror = () => {
+    if (authState.authenticated) {
+      setStatus("WebSocket error");
+    }
+  };
   ws.onmessage = async (evt) => {
     try {
       const message = JSON.parse(evt.data);
@@ -752,6 +1136,98 @@ function connectWebSocket() {
     }
   };
 }
+
+async function startAuthorizedSession() {
+  await refreshPresetList();
+  await refreshSchema();
+  closeWebSocket();
+  connectWebSocket();
+  setStatus("Connected");
+}
+
+async function setupPassword() {
+  const password = authPasswordEl.value || "";
+  const confirmPassword = authPasswordConfirmEl.value || "";
+  if (password.length < 8) {
+    setStatus("Password must be at least 8 characters");
+    return;
+  }
+  if (password !== confirmPassword) {
+    setStatus("Password confirmation does not match");
+    return;
+  }
+
+  try {
+    const result = await api("/auth/setup", "POST", { password, confirmPassword }, { includeAuth: false, handleUnauthorized: false });
+    setAuthToken(result.token || "");
+    authState.requiresSetup = false;
+    authState.authenticated = !!result.token;
+    applyAuthUiState();
+    await startAuthorizedSession();
+  } catch (e) {
+    setStatus(`Setup error: ${e.message}`);
+  }
+}
+
+async function login() {
+  const password = authPasswordEl.value || "";
+  if (!password) {
+    setStatus("Please enter password");
+    return;
+  }
+
+  try {
+    const result = await api("/auth/login", "POST", { password }, { includeAuth: false, handleUnauthorized: false });
+    setAuthToken(result.token || "");
+    authState.requiresSetup = false;
+    authState.authenticated = !!result.token;
+    applyAuthUiState();
+    await startAuthorizedSession();
+  } catch (e) {
+    if (e.status === 429 && e.retryAfterSeconds > 0) {
+      setStatus(`Login temporarily locked. retry after ${e.retryAfterSeconds}s`);
+      return;
+    }
+    setStatus(`Login error: ${e.message}`);
+  }
+}
+
+async function logout() {
+  try {
+    await api("/auth/logout", "POST", null, { includeAuth: true, handleUnauthorized: false });
+  } catch {
+  }
+
+  authState.authenticated = false;
+  setAuthToken("");
+  closeWebSocket();
+  await refreshAuthStatus();
+  setStatus(authState.requiresSetup ? "Password setup required" : "Logged out");
+}
+
+authSetupBtn.addEventListener("click", setupPassword);
+authLoginBtn.addEventListener("click", login);
+authLogoutBtn.addEventListener("click", logout);
+authPasswordEl.addEventListener("keydown", async (evt) => {
+  if (evt.key !== "Enter") {
+    return;
+  }
+
+  evt.preventDefault();
+  if (authState.requiresSetup) {
+    await setupPassword();
+  } else {
+    await login();
+  }
+});
+authPasswordConfirmEl.addEventListener("keydown", async (evt) => {
+  if (evt.key !== "Enter") {
+    return;
+  }
+
+  evt.preventDefault();
+  await setupPassword();
+});
 
 savePresetBtn.addEventListener("click", async () => {
   try {
@@ -834,11 +1310,15 @@ viewAllBtn.addEventListener("click", () => setView("all"));
 async function main() {
   try {
     setView(currentView);
-    await api("/health");
-    await refreshPresetList();
-    await refreshSchema();
-    connectWebSocket();
-    setStatus("Connected");
+    applyAuthUiState();
+    await api("/health", "GET", null, { includeAuth: false, handleUnauthorized: false });
+    await refreshAuthStatus();
+    if (authState.authenticated) {
+      await startAuthorizedSession();
+      return;
+    }
+
+    setStatus(authState.requiresSetup ? "Password setup required" : "Please login");
   } catch (e) {
     setStatus(`Connection error: ${e.message}`);
   }
