@@ -18,6 +18,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         private readonly RemotePostprocessController controller;
         private readonly WsEventHub wsEventHub;
         private readonly AuthSessionService authSessionService;
+        private readonly SyncTargetService syncTargetService;
         private readonly WebUiAssetProvider webUiAssetProvider;
         private readonly object socketLock = new object();
         private readonly System.Collections.Generic.List<WebSocket> sockets = new System.Collections.Generic.List<WebSocket>();
@@ -31,6 +32,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             this.controller = controller;
             this.wsEventHub = wsEventHub;
             authSessionService = new AuthSessionService(remotePostprocessRootPath);
+            syncTargetService = new SyncTargetService(remotePostprocessRootPath, port);
             webUiAssetProvider = new WebUiAssetProvider();
         }
 
@@ -57,6 +59,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 listener.Start();
             }
             isRunning = true;
+            syncTargetService.Start();
 
             workerThread = new Thread(ListenLoop)
             {
@@ -95,6 +98,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
 
             CloseAllSockets();
             UnsubscribeEvents();
+            syncTargetService.Stop();
 
             workerThread = null;
             listener = null;
@@ -244,6 +248,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
 
             if (request.HttpMethod == "PATCH" && path == "/state")
             {
+                bool isRelayedPatch = string.Equals(request.Headers["X-URP-Remote-Relay"], "1", StringComparison.Ordinal);
                 string body = ReadRequestBody(request);
                 StatePatch patch = TryParseJson<StatePatch>(body);
                 if (patch == null)
@@ -257,6 +262,11 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 {
                     SafeWriteJson(response, 500, "{\"ok\":false,\"error\":\"apply_failed\"}");
                     return;
+                }
+
+                if (!isRelayedPatch)
+                {
+                    syncTargetService.ForwardPatchAsync(patch);
                 }
 
                 SafeWriteJson(response, 200, "{\"ok\":true}");
@@ -360,6 +370,81 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 }
 
                 controller.InvokeOnMainThread(() => controller.SetSelectedPresetName(req.presetName));
+                SafeWriteJson(response, 200, "{\"ok\":true}");
+                return;
+            }
+
+            if (request.HttpMethod == "GET" && path == "/sync/targets")
+            {
+                var payload = new SyncTargetListResponse();
+                SyncTargetSnapshot[] snapshots = syncTargetService.GetSnapshots();
+                for (int i = 0; i < snapshots.Length; i++)
+                {
+                    payload.targets.Add(snapshots[i]);
+                }
+
+                SafeWriteJson(response, 200, JsonUtility.ToJson(payload));
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/sync/targets/add")
+            {
+                string body = ReadRequestBody(request);
+                SyncTargetAddRequest req = TryParseJson<SyncTargetAddRequest>(body);
+                if (req == null || string.IsNullOrWhiteSpace(req.address))
+                {
+                    SafeWriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_address\"}");
+                    return;
+                }
+
+                if (!syncTargetService.TryAddOrUpdateTarget(req.address, req.password, out string error))
+                {
+                    SafeWriteJson(response, 400, JsonUtility.ToJson(new SyncErrorResponse { error = error }));
+                    return;
+                }
+
+                SafeWriteJson(response, 200, "{\"ok\":true}");
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/sync/targets/remove")
+            {
+                string body = ReadRequestBody(request);
+                SyncTargetRemoveRequest req = TryParseJson<SyncTargetRemoveRequest>(body);
+                if (req == null || string.IsNullOrWhiteSpace(req.targetId))
+                {
+                    SafeWriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_target\"}");
+                    return;
+                }
+
+                if (!syncTargetService.TryRemoveTarget(req.targetId, out string error))
+                {
+                    int statusCode = string.Equals(error, "target_not_found", StringComparison.Ordinal) ? 404 : 400;
+                    SafeWriteJson(response, statusCode, JsonUtility.ToJson(new SyncErrorResponse { error = error }));
+                    return;
+                }
+
+                SafeWriteJson(response, 200, "{\"ok\":true}");
+                return;
+            }
+
+            if (request.HttpMethod == "POST" && path == "/sync/targets/set-enabled")
+            {
+                string body = ReadRequestBody(request);
+                SyncTargetSetEnabledRequest req = TryParseJson<SyncTargetSetEnabledRequest>(body);
+                if (req == null || string.IsNullOrWhiteSpace(req.targetId))
+                {
+                    SafeWriteJson(response, 400, "{\"ok\":false,\"error\":\"invalid_target\"}");
+                    return;
+                }
+
+                if (!syncTargetService.TrySetEnabled(req.targetId, req.enabled, out string error))
+                {
+                    int statusCode = string.Equals(error, "target_not_found", StringComparison.Ordinal) ? 404 : 400;
+                    SafeWriteJson(response, statusCode, JsonUtility.ToJson(new SyncErrorResponse { error = error }));
+                    return;
+                }
+
                 SafeWriteJson(response, 200, "{\"ok\":true}");
                 return;
             }
@@ -538,7 +623,8 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             return string.Equals(path, "/schema", StringComparison.Ordinal)
                 || string.Equals(path, "/state", StringComparison.Ordinal)
                 || string.Equals(path, "/ws", StringComparison.Ordinal)
-                || path.StartsWith("/presets", StringComparison.Ordinal);
+                || path.StartsWith("/presets", StringComparison.Ordinal)
+                || path.StartsWith("/sync", StringComparison.Ordinal);
         }
 
         private static void WriteAuthError(HttpListenerResponse response, string error, int statusCode, int retryAfterSeconds = 0)
@@ -831,6 +917,40 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         {
             public System.Collections.Generic.List<string> presets = new System.Collections.Generic.List<string>();
             public string selectedPreset = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class SyncTargetListResponse
+        {
+            public bool ok = true;
+            public System.Collections.Generic.List<SyncTargetSnapshot> targets = new System.Collections.Generic.List<SyncTargetSnapshot>();
+        }
+
+        [Serializable]
+        private sealed class SyncTargetAddRequest
+        {
+            public string address = string.Empty;
+            public string password = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class SyncTargetRemoveRequest
+        {
+            public string targetId = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class SyncTargetSetEnabledRequest
+        {
+            public string targetId = string.Empty;
+            public bool enabled = true;
+        }
+
+        [Serializable]
+        private sealed class SyncErrorResponse
+        {
+            public bool ok = false;
+            public string error = "sync_error";
         }
 
         [Serializable]

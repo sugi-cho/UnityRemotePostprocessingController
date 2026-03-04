@@ -21,8 +21,9 @@
       <div class="view-switch">
         <button id="viewActiveBtn" class="is-active" type="button">Override ON</button>
         <button id="viewAllBtn" type="button">Volume All</button>
+        <button id="viewSyncBtn" type="button">Sync</button>
       </div>
-      <div class="preset-bar">
+      <div id="presetBar" class="preset-bar">
         <select id="presetSelect"></select>
         <input id="presetName" type="text" placeholder="preset name" value="default" />
         <button id="savePresetBtn">Save</button>
@@ -30,6 +31,15 @@
         <button id="renamePresetBtn">Rename</button>
         <button id="deletePresetBtn" class="danger">Delete</button>
       </div>
+      <section id="syncPanel" class="sync-panel" hidden>
+        <div class="sync-config-row">
+          <input id="syncAddress" type="text" placeholder="Sync target IP or URL (ex: 192.168.1.20:8080)" autocomplete="off" />
+          <input id="syncPassword" type="password" placeholder="Target password (optional)" autocomplete="off" />
+          <button id="syncAddBtn" type="button">Add</button>
+          <button id="syncRefreshBtn" type="button">Refresh</button>
+        </div>
+        <div id="syncTargets" class="sync-targets"></div>
+      </section>
     </div>
   </header>
   <main id="app"></main>

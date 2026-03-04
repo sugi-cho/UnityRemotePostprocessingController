@@ -12,6 +12,7 @@ const authSetupBtn = document.getElementById("authSetupBtn");
 const authLoginBtn = document.getElementById("authLoginBtn");
 const authLogoutBtn = document.getElementById("authLogoutBtn");
 const controlPanelEl = document.getElementById("controlPanel");
+const presetBarEl = document.getElementById("presetBar");
 const presetSelectEl = document.getElementById("presetSelect");
 const presetNameEl = document.getElementById("presetName");
 const savePresetBtn = document.getElementById("savePresetBtn");
@@ -20,11 +21,19 @@ const renamePresetBtn = document.getElementById("renamePresetBtn");
 const deletePresetBtn = document.getElementById("deletePresetBtn");
 const viewActiveBtn = document.getElementById("viewActiveBtn");
 const viewAllBtn = document.getElementById("viewAllBtn");
+const viewSyncBtn = document.getElementById("viewSyncBtn");
+const syncPanelEl = document.getElementById("syncPanel");
+const syncAddressEl = document.getElementById("syncAddress");
+const syncPasswordEl = document.getElementById("syncPassword");
+const syncAddBtn = document.getElementById("syncAddBtn");
+const syncRefreshBtn = document.getElementById("syncRefreshBtn");
+const syncTargetsEl = document.getElementById("syncTargets");
 let ws = null;
-const viewMatch = /(?:[?&]view=)(active|all)/i.exec(location.href);
+const viewMatch = /(?:[?&]view=)(active|all|sync)/i.exec(location.href);
 const initialView = viewMatch ? viewMatch[1].toLowerCase() : null;
-let currentView = initialView === "all" ? "all" : "active";
+let currentView = initialView === "all" || initialView === "sync" ? initialView : "active";
 let presetListState = { presets: [], selectedPreset: "" };
+let syncTargetsState = { targets: [] };
 const channelMixerTabByComponent = {};
 const authState = {
   token: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "",
@@ -32,6 +41,7 @@ const authState = {
   authenticated: false
 };
 let gestureLockCount = 0;
+let syncRefreshTimer = null;
 
 function setAuthToken(token) {
   authState.token = token || "";
@@ -65,14 +75,17 @@ function applyAuthUiState() {
   if (authState.authenticated) {
     setAuthUiMode("authenticated");
     controlPanelEl.hidden = false;
-    appEl.hidden = false;
     authPasswordEl.value = "";
     authPasswordConfirmEl.value = "";
+    setView(currentView);
     return;
   }
 
   controlPanelEl.hidden = true;
   appEl.hidden = true;
+  if (syncPanelEl) {
+    syncPanelEl.hidden = true;
+  }
   appEl.innerHTML = "";
   state.schema = null;
 
@@ -211,6 +224,7 @@ async function handleUnauthorizedError() {
   authState.authenticated = false;
   setAuthToken("");
   closeWebSocket();
+  stopSyncAutoRefresh();
   await refreshAuthStatus();
   if (authState.requiresSetup) {
     setStatus("Password setup required");
@@ -1024,9 +1038,27 @@ function renderSchema(schema) {
 }
 
 function setView(viewName) {
-  currentView = viewName;
-  viewActiveBtn.classList.toggle("is-active", viewName === "active");
-  viewAllBtn.classList.toggle("is-active", viewName === "all");
+  const normalizedView = viewName === "all" || viewName === "sync" ? viewName : "active";
+  currentView = normalizedView;
+  viewActiveBtn.classList.toggle("is-active", normalizedView === "active");
+  viewAllBtn.classList.toggle("is-active", normalizedView === "all");
+  viewSyncBtn.classList.toggle("is-active", normalizedView === "sync");
+
+  const isSyncView = normalizedView === "sync";
+  if (presetBarEl) {
+    presetBarEl.hidden = isSyncView;
+  }
+  if (syncPanelEl) {
+    syncPanelEl.hidden = !isSyncView;
+  }
+  appEl.hidden = isSyncView;
+
+  if (isSyncView) {
+    renderSyncTargets();
+    refreshSyncTargets({ silent: true }).catch(() => {});
+    return;
+  }
+
   if (state.schema) {
     renderSchema(state.schema);
   }
@@ -1082,6 +1114,148 @@ async function refreshPresetList(preferredName = "") {
   } else {
     presetNameEl.value = "default";
   }
+}
+
+function formatUtcToLocal(utcText) {
+  if (!utcText) {
+    return "-";
+  }
+  const date = new Date(utcText);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  return date.toLocaleString();
+}
+
+function renderSyncTargets() {
+  if (!syncTargetsEl) {
+    return;
+  }
+
+  syncTargetsEl.innerHTML = "";
+  const targets = (syncTargetsState && syncTargetsState.targets) || [];
+  if (targets.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sync-target-empty";
+    empty.textContent = "No sync targets configured";
+    syncTargetsEl.appendChild(empty);
+    return;
+  }
+
+  targets.forEach((target) => {
+    const item = document.createElement("div");
+    item.className = "sync-target-item";
+
+    const head = document.createElement("div");
+    head.className = "sync-target-head";
+    const address = document.createElement("div");
+    address.className = "sync-target-address";
+    address.textContent = target.address || "(unknown)";
+    const badge = document.createElement("span");
+    badge.className = "sync-target-status";
+
+    let statusLabel = target.connected ? "Connected" : "Disconnected";
+    if (!target.enabled) {
+      statusLabel = "Disabled";
+      badge.classList.add("is-disabled");
+    } else if (target.connected) {
+      badge.classList.add("is-connected");
+    }
+    badge.textContent = statusLabel;
+    head.appendChild(address);
+    head.appendChild(badge);
+
+    const meta = document.createElement("div");
+    meta.className = "sync-target-meta";
+    const checkedAt = formatUtcToLocal(target.lastCheckedUtc);
+    const syncedAt = formatUtcToLocal(target.lastSyncedUtc);
+    const lastError = (target.lastError || "").trim();
+    meta.textContent = `Last check: ${checkedAt} / Last sync: ${syncedAt}${lastError ? ` / Error: ${lastError}` : ""}`;
+
+    const actions = document.createElement("div");
+    actions.className = "sync-target-actions";
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.textContent = target.enabled ? "Disable" : "Enable";
+    toggleBtn.addEventListener("click", async () => {
+      try {
+        await api("/sync/targets/set-enabled", "POST", { targetId: target.id, enabled: !target.enabled });
+        await refreshSyncTargets({ silent: true });
+        setStatus(target.enabled ? "Sync target disabled" : "Sync target enabled");
+      } catch (e) {
+        setStatus(`Sync toggle error: ${e.message}`);
+      }
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "danger";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", async () => {
+      if (!confirm(`Remove sync target "${target.address}"?`)) {
+        return;
+      }
+
+      try {
+        await api("/sync/targets/remove", "POST", { targetId: target.id });
+        await refreshSyncTargets({ silent: true });
+        setStatus("Sync target removed");
+      } catch (e) {
+        setStatus(`Sync remove error: ${e.message}`);
+      }
+    });
+
+    actions.appendChild(toggleBtn);
+    actions.appendChild(removeBtn);
+    item.appendChild(head);
+    item.appendChild(meta);
+    item.appendChild(actions);
+    syncTargetsEl.appendChild(item);
+  });
+}
+
+async function refreshSyncTargets(options = {}) {
+  if (!authState.authenticated) {
+    syncTargetsState = { targets: [] };
+    if (currentView === "sync") {
+      renderSyncTargets();
+    }
+    return;
+  }
+
+  const silent = !!options.silent;
+  try {
+    const data = await api("/sync/targets");
+    syncTargetsState = data || { targets: [] };
+    if (currentView === "sync") {
+      renderSyncTargets();
+    }
+  } catch (e) {
+    if (!silent) {
+      setStatus(`Sync list error: ${e.message}`);
+      throw e;
+    }
+  }
+}
+
+function stopSyncAutoRefresh() {
+  if (!syncRefreshTimer) {
+    return;
+  }
+
+  clearInterval(syncRefreshTimer);
+  syncRefreshTimer = null;
+}
+
+function startSyncAutoRefresh() {
+  stopSyncAutoRefresh();
+  syncRefreshTimer = setInterval(() => {
+    if (!authState.authenticated) {
+      return;
+    }
+
+    refreshSyncTargets({ silent: true }).catch(() => {});
+  }, 3000);
 }
 
 function connectWebSocket() {
@@ -1140,6 +1314,9 @@ function connectWebSocket() {
 async function startAuthorizedSession() {
   await refreshPresetList();
   await refreshSchema();
+  await refreshSyncTargets({ silent: true });
+  setView(currentView);
+  startSyncAutoRefresh();
   closeWebSocket();
   connectWebSocket();
   setStatus("Connected");
@@ -1201,6 +1378,7 @@ async function logout() {
   authState.authenticated = false;
   setAuthToken("");
   closeWebSocket();
+  stopSyncAutoRefresh();
   await refreshAuthStatus();
   setStatus(authState.requiresSetup ? "Password setup required" : "Logged out");
 }
@@ -1306,6 +1484,34 @@ presetSelectEl.addEventListener("change", async () => {
 
 viewActiveBtn.addEventListener("click", () => setView("active"));
 viewAllBtn.addEventListener("click", () => setView("all"));
+viewSyncBtn.addEventListener("click", () => setView("sync"));
+
+syncAddBtn.addEventListener("click", async () => {
+  const address = (syncAddressEl.value || "").trim();
+  const password = syncPasswordEl.value || "";
+  if (!address) {
+    setStatus("Sync add error: address required");
+    return;
+  }
+
+  try {
+    await api("/sync/targets/add", "POST", { address, password });
+    syncAddressEl.value = "";
+    syncPasswordEl.value = "";
+    await refreshSyncTargets({ silent: true });
+    setStatus("Sync target added");
+  } catch (e) {
+    setStatus(`Sync add error: ${e.message}`);
+  }
+});
+
+syncRefreshBtn.addEventListener("click", async () => {
+  try {
+    await refreshSyncTargets({ silent: false });
+    setStatus("Sync list refreshed");
+  } catch {
+  }
+});
 
 async function main() {
   try {
