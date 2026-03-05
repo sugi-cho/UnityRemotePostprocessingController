@@ -67,7 +67,8 @@ function isEditableControl(element) {
     || type === "email"
     || type === "password"
     || type === "number"
-    || type === "range";
+    || type === "range"
+    || type === "color";
 }
 
 function noteAppEditing() {
@@ -168,6 +169,14 @@ function isEditingInMainUi() {
   const active = document.activeElement;
   if (!active || !appEl || !appEl.contains(active) || !isEditableControl(active)) {
     return false;
+  }
+
+  // Keep enum dropdown stable while focused/open.
+  if (active.tagName && active.tagName.toUpperCase() === "SELECT") {
+    return true;
+  }
+  if (active.tagName && active.tagName.toUpperCase() === "INPUT" && (active.type || "").toLowerCase() === "color") {
+    return true;
   }
 
   if (isComposingText) {
@@ -847,6 +856,7 @@ function createTrackballLikeContent(param, content) {
   picker.type = "color";
   picker.className = "trackball-picker";
   picker.value = `#${toHex(normalized.r)}${toHex(normalized.g)}${toHex(normalized.b)}`;
+  setFocusKey(picker, `${param.path}:trackball-color`);
   const marker = document.createElement("div");
   marker.className = "trackball-marker";
   wheel.appendChild(picker);
