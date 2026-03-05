@@ -43,6 +43,8 @@ const authState = {
 let gestureLockCount = 0;
 let syncRefreshTimer = null;
 let hasPendingSchemaRender = false;
+let isComposingText = false;
+let lastAppEditAtMs = 0;
 
 function isEditableControl(element) {
   if (!element || !element.tagName) {
@@ -66,6 +68,10 @@ function isEditableControl(element) {
     || type === "password"
     || type === "number"
     || type === "range";
+}
+
+function noteAppEditing() {
+  lastAppEditAtMs = Date.now();
 }
 
 function setFocusKey(element, key) {
@@ -160,14 +166,16 @@ function isEditingInMainUi() {
   }
 
   const active = document.activeElement;
-  if (!isEditableControl(active)) {
+  if (!active || !appEl || !appEl.contains(active) || !isEditableControl(active)) {
     return false;
   }
 
-  if (appEl && appEl.contains(active)) {
+  if (isComposingText) {
     return true;
   }
-  return false;
+
+  const idleThresholdMs = 1200;
+  return (Date.now() - lastAppEditAtMs) <= idleThresholdMs;
 }
 
 function flushPendingSchemaRender() {
@@ -330,6 +338,38 @@ window.addEventListener("pointercancel", () => {
 
 if (appEl) {
   appEl.addEventListener("focusout", () => {
+    setTimeout(() => {
+      if (!document.activeElement || !appEl.contains(document.activeElement)) {
+        isComposingText = false;
+      }
+      flushPendingSchemaRender();
+    }, 0);
+  });
+  appEl.addEventListener("input", (evt) => {
+    if (!isEditableControl(evt.target)) {
+      return;
+    }
+    noteAppEditing();
+  });
+  appEl.addEventListener("keydown", (evt) => {
+    if (!isEditableControl(evt.target)) {
+      return;
+    }
+    noteAppEditing();
+  });
+  appEl.addEventListener("compositionstart", (evt) => {
+    if (!isEditableControl(evt.target)) {
+      return;
+    }
+    isComposingText = true;
+    noteAppEditing();
+  });
+  appEl.addEventListener("compositionend", (evt) => {
+    if (!isEditableControl(evt.target)) {
+      return;
+    }
+    isComposingText = false;
+    noteAppEditing();
     setTimeout(() => flushPendingSchemaRender(), 0);
   });
 }

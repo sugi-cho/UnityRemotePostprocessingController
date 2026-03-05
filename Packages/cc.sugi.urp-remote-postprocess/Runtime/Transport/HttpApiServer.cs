@@ -748,6 +748,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 if (socket == null || socket.State != WebSocketState.Open)
                 {
                     RemoveSocket(socket);
+                    DisposeSocketQuietly(socket);
                     continue;
                 }
 
@@ -762,6 +763,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 catch
                 {
                     RemoveSocket(socket);
+                    DisposeSocketQuietly(socket);
                 }
             }
         }
@@ -771,6 +773,33 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             lock (socketLock)
             {
                 sockets.Remove(socket);
+            }
+        }
+
+        private static void DisposeSocketQuietly(WebSocket socket)
+        {
+            if (socket == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
+                {
+                    socket.CloseAsync(WebSocketCloseStatus.InternalServerError, "send_failed", CancellationToken.None).GetAwaiter().GetResult();
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                socket.Dispose();
+            }
+            catch
+            {
             }
         }
 
