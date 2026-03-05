@@ -28,8 +28,10 @@
         <input id="presetName" type="text" placeholder="preset name" value="default" />
         <button id="savePresetBtn">Save</button>
         <button id="loadPresetBtn">Load</button>
+        <button id="resetPresetBtn" type="button">Reset</button>
         <button id="renamePresetBtn">Rename</button>
         <button id="deletePresetBtn" class="danger">Delete</button>
+        <button id="showQrBtn" type="button">QR</button>
       </div>
       <section id="syncPanel" class="sync-panel" hidden>
         <div class="sync-config-row">
@@ -42,6 +44,15 @@
       </section>
     </div>
   </header>
+  <div id="qrModal" class="qr-modal" hidden>
+    <div class="qr-modal-backdrop"></div>
+    <div class="qr-modal-card" role="dialog" aria-modal="true" aria-labelledby="qrTitle">
+      <h2 id="qrTitle">WebUI QR</h2>
+      <img id="qrImage" class="qr-image" alt="QR code" />
+      <div id="qrUrlText" class="qr-url"></div>
+      <button id="closeQrBtn" type="button">Close</button>
+    </div>
+  </div>
   <main id="app"></main>
   <template id="componentTemplate">
     <section class="component">

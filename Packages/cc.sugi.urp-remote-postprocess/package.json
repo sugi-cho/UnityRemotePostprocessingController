@@ -4,6 +4,13 @@
   "displayName": "URP Remote Postprocess",
   "description": "Runtime remote controller for URP VolumeProfile post process settings via Web UI.",
   "unity": "6000.0",
+  "samples": [
+    {
+      "displayName": "URP Remote Postprocess Sample",
+      "description": "Sample scene and URP assets for remote postprocess control.",
+      "path": "Samples~/URPRemotePostprocessSample"
+    }
+  ],
   "author": {
     "name": "sugi-cho"
   }
