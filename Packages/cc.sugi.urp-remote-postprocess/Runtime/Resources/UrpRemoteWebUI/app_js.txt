@@ -1037,6 +1037,21 @@ function renderSchema(schema) {
   });
 }
 
+function setSyncPanelVisible(visible) {
+  if (!syncPanelEl) {
+    return;
+  }
+
+  syncPanelEl.hidden = !visible;
+  [syncAddressEl, syncPasswordEl, syncAddBtn, syncRefreshBtn].forEach((el) => {
+    if (!el) {
+      return;
+    }
+
+    el.disabled = !visible;
+  });
+}
+
 function setView(viewName) {
   const normalizedView = viewName === "all" || viewName === "sync" ? viewName : "active";
   currentView = normalizedView;
@@ -1048,9 +1063,7 @@ function setView(viewName) {
   if (presetBarEl) {
     presetBarEl.hidden = isSyncView;
   }
-  if (syncPanelEl) {
-    syncPanelEl.hidden = !isSyncView;
-  }
+  setSyncPanelVisible(isSyncView);
   appEl.hidden = isSyncView;
 
   if (isSyncView) {
@@ -1250,7 +1263,7 @@ function stopSyncAutoRefresh() {
 function startSyncAutoRefresh() {
   stopSyncAutoRefresh();
   syncRefreshTimer = setInterval(() => {
-    if (!authState.authenticated) {
+    if (!authState.authenticated || currentView !== "sync") {
       return;
     }
 

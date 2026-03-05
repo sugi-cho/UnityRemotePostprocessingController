@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Threading;
+using Cc.Sugi.UrpRemotePostprocess.Runtime.Bootstrap;
 using Cc.Sugi.UrpRemotePostprocess.Runtime.Model;
 using UnityEngine;
 
@@ -20,12 +21,13 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         private readonly object syncRoot = new object();
         private readonly string syncTargetFilePath;
         private readonly int defaultPort;
+        private readonly RemotePostprocessController controller;
         private readonly List<SyncTargetConfigData> targets = new List<SyncTargetConfigData>();
         private readonly Dictionary<string, SyncTargetRuntimeState> runtimeStatesById = new Dictionary<string, SyncTargetRuntimeState>();
         private volatile bool isRunning;
         private Thread probeThread;
 
-        public SyncTargetService(string remotePostprocessRootPath, int defaultPort)
+        public SyncTargetService(string remotePostprocessRootPath, int defaultPort, RemotePostprocessController controller)
         {
             if (string.IsNullOrWhiteSpace(remotePostprocessRootPath))
             {
@@ -33,6 +35,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             }
 
             this.defaultPort = defaultPort > 0 ? defaultPort : 8080;
+            this.controller = controller;
             syncTargetFilePath = Path.Combine(remotePostprocessRootPath, SyncTargetFileName);
             LoadConfig();
         }
@@ -399,31 +402,104 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         {
             bool connected = TryProbeHealth(address, out string error);
             DateTime now = DateTime.UtcNow;
+            List<SyncTargetConfigData> targetsToInitialSync = null;
 
             lock (syncRoot)
             {
                 if (!string.IsNullOrWhiteSpace(specificTargetId))
                 {
+                    SyncTargetConfigData target = FindByIdNoLock(specificTargetId);
                     SyncTargetRuntimeState state = GetOrCreateRuntimeStateNoLock(specificTargetId);
+                    bool wasConnected = state.connected;
                     state.connected = connected;
                     state.connectionError = connected ? string.Empty : error;
                     state.lastCheckedUtc = now;
-                    return;
-                }
-
-                for (int i = 0; i < targets.Count; i++)
-                {
-                    if (!string.Equals(targets[i].address, address, StringComparison.OrdinalIgnoreCase))
+                    if (connected && !wasConnected && target != null && target.enabled)
                     {
-                        continue;
+                        targetsToInitialSync = new List<SyncTargetConfigData>(1) { CloneConfig(target) };
                     }
+                }
+                else
+                {
+                    for (int i = 0; i < targets.Count; i++)
+                    {
+                        if (!string.Equals(targets[i].address, address, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
 
-                    SyncTargetRuntimeState state = GetOrCreateRuntimeStateNoLock(targets[i].id);
-                    state.connected = connected;
-                    state.connectionError = connected ? string.Empty : error;
-                    state.lastCheckedUtc = now;
+                        SyncTargetRuntimeState state = GetOrCreateRuntimeStateNoLock(targets[i].id);
+                        bool wasConnected = state.connected;
+                        state.connected = connected;
+                        state.connectionError = connected ? string.Empty : error;
+                        state.lastCheckedUtc = now;
+                        if (connected && !wasConnected && targets[i].enabled)
+                        {
+                            if (targetsToInitialSync == null)
+                            {
+                                targetsToInitialSync = new List<SyncTargetConfigData>();
+                            }
+
+                            targetsToInitialSync.Add(CloneConfig(targets[i]));
+                        }
+                    }
                 }
             }
+
+            if (!connected || targetsToInitialSync == null || targetsToInitialSync.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < targetsToInitialSync.Count; i++)
+            {
+                SyncTargetConfigData target = targetsToInitialSync[i];
+                ThreadPool.QueueUserWorkItem(_ => SyncFullStateToTarget(target));
+            }
+        }
+
+        private void SyncFullStateToTarget(SyncTargetConfigData target)
+        {
+            if (target == null || !target.enabled)
+            {
+                return;
+            }
+
+            if (!TryBuildCurrentStatePatch(out StatePatch patch))
+            {
+                UpdateSyncState(target.id, true, false, "state_unavailable");
+                return;
+            }
+
+            if (patch.entries == null)
+            {
+                patch.entries = new List<StatePatchEntry>();
+            }
+
+            string patchJson = JsonUtility.ToJson(patch);
+            bool success = TrySendPatch(target, patchJson, out bool reachable, out string error);
+            UpdateSyncState(target.id, reachable, success, error);
+        }
+
+        private bool TryBuildCurrentStatePatch(out StatePatch patch)
+        {
+            patch = null;
+            if (controller == null)
+            {
+                return false;
+            }
+
+            if (!controller.InvokeOnMainThread(() => controller.BuildCurrentStatePatch(), out patch))
+            {
+                return false;
+            }
+
+            if (patch == null)
+            {
+                patch = new StatePatch { entries = new List<StatePatchEntry>() };
+            }
+
+            return true;
         }
 
         private void UpdateSyncState(string targetId, bool reachable, bool success, string error)

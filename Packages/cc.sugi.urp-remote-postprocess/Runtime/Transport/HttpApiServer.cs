@@ -32,7 +32,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             this.controller = controller;
             this.wsEventHub = wsEventHub;
             authSessionService = new AuthSessionService(remotePostprocessRootPath);
-            syncTargetService = new SyncTargetService(remotePostprocessRootPath, port);
+            syncTargetService = new SyncTargetService(remotePostprocessRootPath, port, controller);
             webUiAssetProvider = new WebUiAssetProvider();
         }
 
