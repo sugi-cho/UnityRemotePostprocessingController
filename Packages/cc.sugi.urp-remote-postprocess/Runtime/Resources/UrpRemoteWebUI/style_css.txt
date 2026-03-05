@@ -76,7 +76,7 @@ h1 {
 }
 
 .auth-panel.is-authenticated {
-  grid-template-columns: auto;
+  grid-template-columns: auto auto;
   justify-content: start;
 }
 
@@ -87,8 +87,10 @@ h1 {
 .auth-panel.is-login #authPasswordConfirm,
 .auth-panel.is-login #authSetupBtn,
 .auth-panel.is-login #authLogoutBtn,
+.auth-panel.is-login #showQrBtn,
 .auth-panel.is-setup #authLoginBtn,
 .auth-panel.is-setup #authLogoutBtn,
+.auth-panel.is-setup #showQrBtn,
 .auth-panel.is-authenticated #authPassword,
 .auth-panel.is-authenticated #authPasswordConfirm,
 .auth-panel.is-authenticated #authSetupBtn,
@@ -99,7 +101,7 @@ h1 {
 .preset-bar {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) repeat(6, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) repeat(5, auto);
   gap: 8px;
 }
 
@@ -570,7 +572,7 @@ button.danger {
   }
 
   .preset-bar {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .preset-bar > :nth-child(1) {
@@ -578,7 +580,7 @@ button.danger {
   }
 
   .preset-bar > :nth-child(2) {
-    grid-column: 3 / 5;
+    grid-column: 3 / 6;
   }
 
   .preset-bar button {

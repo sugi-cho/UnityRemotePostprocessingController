@@ -16,6 +16,7 @@
       <button id="authSetupBtn" type="button">Set Password</button>
       <button id="authLoginBtn" type="button">Login</button>
       <button id="authLogoutBtn" type="button">Logout</button>
+      <button id="showQrBtn" type="button">QR</button>
     </div>
     <div id="controlPanel">
       <div class="view-switch">
@@ -31,7 +32,6 @@
         <button id="resetPresetBtn" type="button">Reset</button>
         <button id="renamePresetBtn">Rename</button>
         <button id="deletePresetBtn" class="danger">Delete</button>
-        <button id="showQrBtn" type="button">QR</button>
       </div>
       <section id="syncPanel" class="sync-panel" hidden>
         <div class="sync-config-row">
