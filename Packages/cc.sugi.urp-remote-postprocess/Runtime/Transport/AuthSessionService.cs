@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using UnityEngine;
@@ -9,10 +10,11 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
     public sealed class AuthSessionService
     {
         private const string AuthFileName = "auth.json";
+        private const string SessionFileName = "auth_sessions.json";
         private const int HashByteLength = 32;
         private const int SaltByteLength = 16;
         private const int Iterations = 120000;
-        private const int SessionHours = 8;
+        private const int SessionHours = 24 * 365 * 5;
         private const int MaxFailedAttempts = 5;
         private const int LockoutSeconds = 30;
         private const int TokenByteLength = 32;
@@ -20,6 +22,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
         private readonly object syncRoot = new object();
         private readonly Dictionary<string, DateTime> sessionsByToken = new Dictionary<string, DateTime>();
         private readonly string authFilePath;
+        private readonly string sessionFilePath;
         private AuthConfigData config;
         private DateTime configWriteTimeUtc;
         private int failedLoginCount;
@@ -33,6 +36,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             }
 
             authFilePath = Path.Combine(remotePostprocessRootPath, AuthFileName);
+            sessionFilePath = Path.Combine(remotePostprocessRootPath, SessionFileName);
         }
 
         public bool RequiresSetup
@@ -91,6 +95,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                     failedLoginCount = 0;
                     lockoutUntilUtc = DateTime.MinValue;
                     sessionsByToken.Clear();
+                    SaveSessionsNoLock(DateTime.UtcNow);
                     return true;
                 }
                 catch (Exception ex)
@@ -156,6 +161,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                     token = CreateToken();
                     DateTime expiresAt = now.AddHours(SessionHours);
                     sessionsByToken[token] = expiresAt;
+                    SaveSessionsNoLock(now);
                     expiresInSeconds = (int)Math.Max(1, Math.Round((expiresAt - now).TotalSeconds));
                     return true;
                 }
@@ -187,7 +193,13 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                     }
 
                     DateTime now = DateTime.UtcNow;
+                    int beforePruneCount = sessionsByToken.Count;
                     PruneExpiredSessionsNoLock(now);
+                    if (beforePruneCount != sessionsByToken.Count)
+                    {
+                        SaveSessionsNoLock(now);
+                    }
+
                     if (!sessionsByToken.TryGetValue(token, out DateTime expiryUtc))
                     {
                         return false;
@@ -196,6 +208,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                     if (expiryUtc <= now)
                     {
                         sessionsByToken.Remove(token);
+                        SaveSessionsNoLock(now);
                         return false;
                     }
 
@@ -219,7 +232,13 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             {
                 try
                 {
-                    return sessionsByToken.Remove(token);
+                    bool removed = sessionsByToken.Remove(token);
+                    if (removed)
+                    {
+                        SaveSessionsNoLock(DateTime.UtcNow);
+                    }
+
+                    return removed;
                 }
                 catch
                 {
@@ -279,6 +298,7 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
                 sessionsByToken.Clear();
                 failedLoginCount = 0;
                 lockoutUntilUtc = DateTime.MinValue;
+                LoadSessionsNoLock(DateTime.UtcNow);
             }
             catch
             {
@@ -303,6 +323,111 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             sessionsByToken.Clear();
             failedLoginCount = 0;
             lockoutUntilUtc = DateTime.MinValue;
+        }
+
+        private void LoadSessionsNoLock(DateTime nowUtc)
+        {
+            sessionsByToken.Clear();
+            if (config == null || !File.Exists(sessionFilePath))
+            {
+                return;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(sessionFilePath);
+                AuthSessionStoreData store = JsonUtility.FromJson<AuthSessionStoreData>(json);
+                if (store == null)
+                {
+                    return;
+                }
+
+                if (!string.Equals(store.saltBase64 ?? string.Empty, config.saltBase64 ?? string.Empty, StringComparison.Ordinal)
+                    || !string.Equals(store.hashBase64 ?? string.Empty, config.hashBase64 ?? string.Empty, StringComparison.Ordinal))
+                {
+                    DeleteSessionFileNoLock();
+                    return;
+                }
+
+                List<AuthSessionEntryData> entries = store.sessions ?? new List<AuthSessionEntryData>();
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    AuthSessionEntryData entry = entries[i];
+                    string token = (entry?.token ?? string.Empty).Trim();
+                    if (string.IsNullOrEmpty(token))
+                    {
+                        continue;
+                    }
+
+                    if (!DateTime.TryParse(
+                        entry.expiresAtUtc ?? string.Empty,
+                        CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind,
+                        out DateTime expiryUtc))
+                    {
+                        continue;
+                    }
+
+                    expiryUtc = expiryUtc.ToUniversalTime();
+                    if (expiryUtc <= nowUtc)
+                    {
+                        continue;
+                    }
+
+                    sessionsByToken[token] = expiryUtc;
+                }
+            }
+            catch
+            {
+                sessionsByToken.Clear();
+            }
+        }
+
+        private void SaveSessionsNoLock(DateTime nowUtc)
+        {
+            if (config == null)
+            {
+                DeleteSessionFileNoLock();
+                return;
+            }
+
+            PruneExpiredSessionsNoLock(nowUtc);
+
+            string dir = Path.GetDirectoryName(sessionFilePath) ?? string.Empty;
+            Directory.CreateDirectory(dir);
+
+            var store = new AuthSessionStoreData
+            {
+                saltBase64 = config.saltBase64 ?? string.Empty,
+                hashBase64 = config.hashBase64 ?? string.Empty,
+                sessions = new List<AuthSessionEntryData>()
+            };
+
+            foreach (KeyValuePair<string, DateTime> pair in sessionsByToken)
+            {
+                store.sessions.Add(new AuthSessionEntryData
+                {
+                    token = pair.Key,
+                    expiresAtUtc = pair.Value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+                });
+            }
+
+            string json = JsonUtility.ToJson(store, false);
+            File.WriteAllText(sessionFilePath, json);
+        }
+
+        private void DeleteSessionFileNoLock()
+        {
+            try
+            {
+                if (File.Exists(sessionFilePath))
+                {
+                    File.Delete(sessionFilePath);
+                }
+            }
+            catch
+            {
+            }
         }
 
         private void PruneExpiredSessionsNoLock(DateTime now)
@@ -470,6 +595,21 @@ namespace Cc.Sugi.UrpRemotePostprocess.Runtime.Transport
             public string saltBase64 = string.Empty;
             public string hashBase64 = string.Empty;
             public string createdAtUtc = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class AuthSessionStoreData
+        {
+            public string saltBase64 = string.Empty;
+            public string hashBase64 = string.Empty;
+            public List<AuthSessionEntryData> sessions = new List<AuthSessionEntryData>();
+        }
+
+        [Serializable]
+        private sealed class AuthSessionEntryData
+        {
+            public string token = string.Empty;
+            public string expiresAtUtc = string.Empty;
         }
     }
 }

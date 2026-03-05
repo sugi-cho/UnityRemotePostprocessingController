@@ -42,6 +42,162 @@ const authState = {
 };
 let gestureLockCount = 0;
 let syncRefreshTimer = null;
+let hasPendingSchemaRender = false;
+
+function isEditableControl(element) {
+  if (!element || !element.tagName) {
+    return false;
+  }
+
+  const tag = element.tagName.toUpperCase();
+  if (tag === "TEXTAREA" || tag === "SELECT") {
+    return true;
+  }
+  if (tag !== "INPUT") {
+    return false;
+  }
+
+  const type = (element.type || "").toLowerCase();
+  return type === "text"
+    || type === "search"
+    || type === "url"
+    || type === "tel"
+    || type === "email"
+    || type === "password"
+    || type === "number"
+    || type === "range";
+}
+
+function setFocusKey(element, key) {
+  if (!element) {
+    return;
+  }
+  element.dataset.focusKey = key;
+}
+
+function isTextInputElement(element) {
+  if (!element || !element.tagName || element.tagName.toUpperCase() !== "INPUT") {
+    return false;
+  }
+
+  const type = (element.type || "").toLowerCase();
+  return type === "text"
+    || type === "search"
+    || type === "url"
+    || type === "tel"
+    || type === "email"
+    || type === "password"
+    || type === "number";
+}
+
+function captureAppFocusState() {
+  if (!appEl) {
+    return null;
+  }
+
+  const active = document.activeElement;
+  if (!active || !appEl.contains(active)) {
+    return null;
+  }
+
+  const focusKey = active.dataset ? (active.dataset.focusKey || "") : "";
+  if (!focusKey) {
+    return null;
+  }
+
+  const stateSnapshot = { focusKey };
+  if (isTextInputElement(active)) {
+    stateSnapshot.selectionStart = Number.isFinite(active.selectionStart) ? active.selectionStart : null;
+    stateSnapshot.selectionEnd = Number.isFinite(active.selectionEnd) ? active.selectionEnd : null;
+  }
+
+  return stateSnapshot;
+}
+
+function restoreAppFocusState(snapshot) {
+  if (!snapshot || !snapshot.focusKey || !appEl) {
+    return;
+  }
+
+  const candidates = appEl.querySelectorAll("[data-focus-key]");
+  let target = null;
+  for (let i = 0; i < candidates.length; i += 1) {
+    const current = candidates[i];
+    if ((current.dataset && current.dataset.focusKey) === snapshot.focusKey) {
+      target = current;
+      break;
+    }
+  }
+  if (!target) {
+    return;
+  }
+
+  try {
+    target.focus({ preventScroll: true });
+  } catch {
+    target.focus();
+  }
+
+  if (!isTextInputElement(target)) {
+    return;
+  }
+
+  const start = Number.isFinite(snapshot.selectionStart) ? snapshot.selectionStart : null;
+  const end = Number.isFinite(snapshot.selectionEnd) ? snapshot.selectionEnd : null;
+  if (start === null || end === null) {
+    return;
+  }
+
+  try {
+    target.setSelectionRange(start, end);
+  } catch {
+  }
+}
+
+function isEditingInMainUi() {
+  if (gestureLockCount > 0) {
+    return true;
+  }
+
+  const active = document.activeElement;
+  if (!isEditableControl(active)) {
+    return false;
+  }
+
+  if (appEl && appEl.contains(active)) {
+    return true;
+  }
+  if (presetBarEl && presetBarEl.contains(active)) {
+    return true;
+  }
+  if (syncPanelEl && syncPanelEl.contains(active)) {
+    return true;
+  }
+  return false;
+}
+
+function flushPendingSchemaRender() {
+  if (!hasPendingSchemaRender || isEditingInMainUi() || !state.schema || currentView === "sync") {
+    return;
+  }
+
+  hasPendingSchemaRender = false;
+  renderSchema(state.schema);
+}
+
+function requestSchemaRender() {
+  if (!state.schema || currentView === "sync") {
+    return;
+  }
+
+  if (isEditingInMainUi()) {
+    hasPendingSchemaRender = true;
+    return;
+  }
+
+  hasPendingSchemaRender = false;
+  renderSchema(state.schema);
+}
 
 function setAuthToken(token) {
   authState.token = token || "";
@@ -88,6 +244,7 @@ function applyAuthUiState() {
   }
   appEl.innerHTML = "";
   state.schema = null;
+  hasPendingSchemaRender = false;
 
   if (authState.requiresSetup) {
     setAuthUiMode("setup");
@@ -109,6 +266,7 @@ function endGestureLock() {
   gestureLockCount = Math.max(0, gestureLockCount - 1);
   if (gestureLockCount === 0) {
     document.body.classList.remove("gesture-lock");
+    flushPendingSchemaRender();
   }
 }
 
@@ -138,11 +296,7 @@ function bindGestureLock(element) {
   element.addEventListener("touchstart", lock, { passive: true });
   element.addEventListener("touchend", unlock, { passive: true });
   element.addEventListener("touchcancel", unlock, { passive: true });
-  element.addEventListener("pointerdown", (evt) => {
-    if (evt.pointerType === "touch") {
-      lock();
-    }
-  }, { passive: true });
+  element.addEventListener("pointerdown", lock, { passive: true });
   element.addEventListener("pointerup", unlock, { passive: true });
   element.addEventListener("pointercancel", unlock, { passive: true });
   element.addEventListener("lostpointercapture", unlock, { passive: true });
@@ -152,6 +306,7 @@ window.addEventListener("touchend", () => {
   if (gestureLockCount > 0) {
     gestureLockCount = 0;
     document.body.classList.remove("gesture-lock");
+    flushPendingSchemaRender();
   }
 }, { passive: true });
 
@@ -159,8 +314,15 @@ window.addEventListener("touchcancel", () => {
   if (gestureLockCount > 0) {
     gestureLockCount = 0;
     document.body.classList.remove("gesture-lock");
+    flushPendingSchemaRender();
   }
 }, { passive: true });
+
+if (appEl) {
+  appEl.addEventListener("focusout", () => {
+    setTimeout(() => flushPendingSchemaRender(), 0);
+  });
+}
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -479,6 +641,8 @@ function createNumberContent(param, content) {
   number.autocomplete = "off";
   number.spellcheck = false;
   number.value = formatNumericValue(initialValue, allowFloat);
+  setFocusKey(range, `${param.path}:range`);
+  setFocusKey(number, `${param.path}:text`);
 
   function emit(v) {
     let normalized = allowFloat ? Number.parseFloat(v) : Number.parseInt(v, 10);
@@ -540,11 +704,13 @@ function createColorContent(param, content) {
   row.className = "row";
   const picker = document.createElement("input");
   picker.type = "color";
+  setFocusKey(picker, `${param.path}:color`);
   const alpha = document.createElement("input");
   alpha.type = "range";
   alpha.min = 0;
   alpha.max = 1;
   alpha.step = 0.01;
+  setFocusKey(alpha, `${param.path}:alpha`);
   const preview = document.createElement("div");
   preview.className = "color-preview";
 
@@ -590,6 +756,7 @@ function createVectorContent(param, content, dimensions) {
     input.step = "0.01";
     input.className = "small";
     input.value = Number.isFinite(current[k]) ? current[k] : 0;
+    setFocusKey(input, `${param.path}:${k}`);
     row.appendChild(input);
     inputs[k] = input;
   });
@@ -646,6 +813,7 @@ function createTrackballLikeContent(param, content) {
   intensity.max = "2";
   intensity.step = "0.01";
   intensity.value = String(Math.max(0, Math.min(2, normalized.intensity)));
+  setFocusKey(intensity, `${param.path}:intensity`);
 
   const offsetLabel = document.createElement("label");
   offsetLabel.textContent = "Offset";
@@ -655,6 +823,7 @@ function createTrackballLikeContent(param, content) {
   offset.max = "1";
   offset.step = "0.01";
   offset.value = String(Number.isFinite(current.w) ? current.w : 0);
+  setFocusKey(offset, `${param.path}:offset`);
   wireRangeVisual(intensity);
   wireRangeVisual(offset);
 
@@ -674,6 +843,7 @@ function createTrackballLikeContent(param, content) {
     input.pattern = "-?[0-9]*[.]?[0-9]*";
     input.autocomplete = "off";
     input.spellcheck = false;
+    setFocusKey(input, `${param.path}:${key}`);
     input.addEventListener("input", () => {
       const filtered = sanitizeNumericText(input.value, true);
       if (filtered !== input.value) {
@@ -843,6 +1013,7 @@ function createEnumContent(param, content) {
   const row = document.createElement("div");
   row.className = "row";
   const select = document.createElement("select");
+  setFocusKey(select, `${param.path}:enum`);
   const current = Number.parseInt(param.currentValueJson || "0", 10);
   const optionsContainer = parseJsonValue(param.enumOptionsJson, { options: [] });
   (optionsContainer.options || []).forEach((opt) => {
@@ -1034,6 +1205,7 @@ function renderChannelMixerFields(component, parameters, body, options) {
 }
 
 function renderSchema(schema) {
+  const focusSnapshot = captureAppFocusState();
   appEl.innerHTML = "";
   const options = {
     onlyOverrideOn: currentView === "active",
@@ -1070,6 +1242,7 @@ function renderSchema(schema) {
     volumeDetails.appendChild(volumeBody);
     appEl.appendChild(volumeDetails);
   });
+  restoreAppFocusState(focusSnapshot);
 }
 
 function setSyncPanelVisible(visible) {
@@ -1108,7 +1281,7 @@ function setView(viewName) {
   }
 
   if (state.schema) {
-    renderSchema(state.schema);
+    requestSchemaRender();
   }
 }
 
@@ -1140,7 +1313,7 @@ async function refreshSchema() {
   const liveState = await api("/state");
   mergeCurrentState(schema, liveState);
   state.schema = schema;
-  renderSchema(schema);
+  requestSchemaRender();
 }
 
 async function refreshPresetList(preferredName = "") {
@@ -1348,7 +1521,14 @@ function connectWebSocket() {
   ws.onmessage = async (evt) => {
     try {
       const message = JSON.parse(evt.data);
-      if (message.eventName === "state.updated" || message.eventName === "preset.loaded") {
+      if (message.eventName === "state.updated") {
+        if (state.schema && message.data) {
+          mergeCurrentState(state.schema, message.data);
+          requestSchemaRender();
+        } else {
+          await refreshSchema();
+        }
+      } else if (message.eventName === "preset.loaded") {
         await refreshSchema();
       }
       if (message.eventName === "error" && message.message) {
