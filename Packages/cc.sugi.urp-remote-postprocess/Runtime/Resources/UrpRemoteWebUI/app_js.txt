@@ -167,12 +167,6 @@ function isEditingInMainUi() {
   if (appEl && appEl.contains(active)) {
     return true;
   }
-  if (presetBarEl && presetBarEl.contains(active)) {
-    return true;
-  }
-  if (syncPanelEl && syncPanelEl.contains(active)) {
-    return true;
-  }
   return false;
 }
 
@@ -311,6 +305,22 @@ window.addEventListener("touchend", () => {
 }, { passive: true });
 
 window.addEventListener("touchcancel", () => {
+  if (gestureLockCount > 0) {
+    gestureLockCount = 0;
+    document.body.classList.remove("gesture-lock");
+    flushPendingSchemaRender();
+  }
+}, { passive: true });
+
+window.addEventListener("pointerup", () => {
+  if (gestureLockCount > 0) {
+    gestureLockCount = 0;
+    document.body.classList.remove("gesture-lock");
+    flushPendingSchemaRender();
+  }
+}, { passive: true });
+
+window.addEventListener("pointercancel", () => {
   if (gestureLockCount > 0) {
     gestureLockCount = 0;
     document.body.classList.remove("gesture-lock");
@@ -1488,7 +1498,14 @@ function connectWebSocket() {
   const tokenQuery = `token=${encodeURIComponent(authState.token)}`;
   const url = `${protocol}://${location.host}/ws?${tokenQuery}`;
   ws = new WebSocket(url);
-  ws.onopen = () => setStatus("Connected");
+  ws.onopen = async () => {
+    setStatus("Connected");
+    // Re-sync after reconnect to cover updates missed while disconnected.
+    try {
+      await refreshSchema();
+    } catch {
+    }
+  };
   ws.onclose = async () => {
     ws = null;
     if (!authState.authenticated) {
