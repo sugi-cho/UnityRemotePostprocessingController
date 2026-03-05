@@ -354,6 +354,34 @@ function isIntermediateNumericText(text, allowFloat) {
   return text === "" || text === "-" || (allowFloat && (text === "." || text === "-."));
 }
 
+function updateRangeVisual(rangeInput) {
+  if (!rangeInput) {
+    return;
+  }
+
+  const min = Number.parseFloat(rangeInput.min);
+  const max = Number.parseFloat(rangeInput.max);
+  const value = Number.parseFloat(rangeInput.value);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value) || max <= min) {
+    rangeInput.style.setProperty("--range-progress", "0%");
+    return;
+  }
+
+  const progress = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  rangeInput.style.setProperty("--range-progress", `${progress}%`);
+}
+
+function wireRangeVisual(rangeInput) {
+  if (!rangeInput || rangeInput.type !== "range") {
+    return;
+  }
+
+  const refresh = () => updateRangeVisual(rangeInput);
+  rangeInput.addEventListener("input", refresh);
+  rangeInput.addEventListener("change", refresh);
+  refresh();
+}
+
 function createFieldFrame(param, options) {
   const wrap = document.createElement("div");
   wrap.className = "field";
@@ -462,6 +490,7 @@ function createNumberContent(param, content) {
       normalized = roundTo3Decimals(normalized);
     }
     range.value = String(normalized);
+    updateRangeVisual(range);
     number.value = formatNumericValue(normalized, allowFloat);
     param.currentValueJson = number.value;
     sendPatchDebounced({
@@ -482,6 +511,7 @@ function createNumberContent(param, content) {
     emit(filtered);
   }
 
+  wireRangeVisual(range);
   range.addEventListener("input", () => emit(range.value));
   number.addEventListener("input", () => {
     const filtered = sanitizeNumericText(number.value, allowFloat);
@@ -521,6 +551,7 @@ function createColorContent(param, content) {
   const value = parseJsonValue(param.currentValueJson, { r: 1, g: 1, b: 1, a: 1 });
   picker.value = `#${toHex(value.r)}${toHex(value.g)}${toHex(value.b)}`;
   alpha.value = Number.isFinite(value.a) ? value.a : 1;
+  wireRangeVisual(alpha);
 
   function emit() {
     const rgb = hexToRgb(picker.value);
@@ -624,6 +655,8 @@ function createTrackballLikeContent(param, content) {
   offset.max = "1";
   offset.step = "0.01";
   offset.value = String(Number.isFinite(current.w) ? current.w : 0);
+  wireRangeVisual(intensity);
+  wireRangeVisual(offset);
 
   const valueEditors = document.createElement("div");
   valueEditors.className = "trackball-values";
@@ -697,6 +730,8 @@ function createTrackballLikeContent(param, content) {
     };
     intensity.value = String(Math.max(0, Math.min(2, roundTo3Decimals(normalizedRgb.intensity))));
     offset.value = String(Math.max(-1, Math.min(1, roundTo3Decimals(w))));
+    updateRangeVisual(intensity);
+    updateRangeVisual(offset);
     updatePreview();
   }
 
